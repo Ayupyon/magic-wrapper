@@ -86,6 +86,7 @@ class UnixTest(unittest.TestCase):
                 print('400' if rejected else '204', end='')
                 sys.exit(0)
             assert sys.argv[sys.argv.index('--noproxy') + 1] == '*'
+            assert sys.argv[sys.argv.index('--user-agent') + 1] == 'clash.meta'
             destination = Path(sys.argv[sys.argv.index('--output') + 1])
             destination.write_bytes((directory / 'subscription.yaml').read_bytes())
         """,

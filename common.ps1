@@ -225,6 +225,7 @@ function Save-Subscription {
     $handler.AllowAutoRedirect = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromSeconds(120)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd('clash.meta')
     $address = [Uri]$Url
     try {
         for ($redirect = 0; $redirect -le 5; $redirect++) {

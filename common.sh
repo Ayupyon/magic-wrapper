@@ -347,7 +347,7 @@ download_configuration() {
     escaped_url=${escaped_url//\"/\\\"}
     # Keep subscription tokens out of the download process's command line.
     if ! printf 'url = "%s"\n' "$escaped_url" | curl --config - --noproxy '*' \
-        --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --fail --silent --show-error --location --user-agent 'clash.meta' --proto '=https' --proto-redir '=https' \
         --connect-timeout 15 --max-time 120 --retry 2 --output "$destination" \
         2> "$temporary_directory/download.error"; then
         printf '%s\n' 'Subscription download failed; the active configuration was preserved.' >&2

@@ -140,8 +140,9 @@ reload, and rollback:
 
 Download or validation failures leave the active configuration unchanged.
 Configuration updates keep the process running and do not fall back to a restart.
-Subscription downloads during installation and updates bypass proxy settings and
-connect directly to the subscription server, including after HTTPS redirects.
+Subscription downloads during installation and updates send `User-Agent: clash.meta`,
+bypass proxy settings, and connect directly to the subscription server, including
+after HTTPS redirects.
 
 ### Reload protocol and guarantees
 
