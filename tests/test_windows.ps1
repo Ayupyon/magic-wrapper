@@ -44,6 +44,89 @@ foreach ($case in $cases) {
     }
 }
 Write-Output 'PowerShell parsing and cron checks passed.'
+
+& {
+    $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ('magic update test-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $temporaryDirectory
+    try {
+        Copy-Item "$root/common.ps1", "$root/update.ps1" $temporaryDirectory
+        $overrides = @'
+function Get-MagicContext {
+    param([switch]$System)
+    [pscustomobject]@{
+        Directory = $PSScriptRoot
+        SettingsPath = Join-Path $PSScriptRoot 'settings.json'
+        System = [bool]$System
+    }
+}
+function Save-Subscription {
+    param([string]$Url, [string]$Destination)
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'subscription.yaml') -Destination $Destination
+}
+function Assert-MagicConfiguration {
+    param($Context, [string]$Binary, [string]$Configuration)
+    if ([IO.File]::ReadAllText($Configuration).Contains('invalid')) {
+        throw 'Invalid fixture configuration.'
+    }
+}
+function Reload-MagicConfiguration {
+    param($Context)
+    $configuration = [IO.File]::ReadAllText((Join-Path $Context.Directory 'config.yaml'))
+    Add-Content -LiteralPath (Join-Path $Context.Directory 'reload.log') -Value $configuration
+    if ($configuration.Contains('fail-start')) {
+        throw 'Fixture rejected the reload.'
+    }
+}
+'@
+        Add-Content -LiteralPath "$temporaryDirectory/common.ps1" -Value $overrides
+        @{ SubscriptionUrl = 'https://example.invalid/'; Schedule = '* * * * *'; System = $false } |
+            ConvertTo-Json | Set-Content "$temporaryDirectory/settings.json"
+        @{ Address = '127.0.0.1:12345'; Secret = ('a' * 64) } |
+            ConvertTo-Json | Set-Content "$temporaryDirectory/controller.json"
+        $configuration = Join-Path $temporaryDirectory 'config.yaml'
+        $subscription = Join-Path $temporaryDirectory 'subscription.yaml'
+        $reloadLog = Join-Path $temporaryDirectory 'reload.log'
+        $original = "mixed-port: 7890`n"
+        [IO.File]::WriteAllText($configuration, $original)
+        foreach ($badConfiguration in @('invalid', 'fail-start')) {
+            [IO.File]::WriteAllText($subscription, $badConfiguration)
+            $failure = $null
+            try {
+                & "$temporaryDirectory/update.ps1"
+            } catch {
+                $failure = $_
+            }
+            $expectedError = 'Invalid fixture configuration.'
+            if ($badConfiguration -eq 'fail-start') {
+                $expectedError = 'Mihomo reload failed; restored the previous configuration.'
+            }
+            if (-not $failure -or $failure.Exception.Message -ne $expectedError) {
+                throw "Unexpected update result for '$badConfiguration': $failure"
+            }
+            if ([IO.File]::ReadAllText($configuration) -cne $original) {
+                throw "Update did not preserve the original file for '$badConfiguration'."
+            }
+        }
+        if ([IO.File]::ReadAllText("$temporaryDirectory/config.previous.yaml") -cne $original -or
+            (Get-Content $reloadLog -Raw) -cne ("fail-start" + [Environment]::NewLine + $original + [Environment]::NewLine)) {
+            throw 'Rollback did not preserve the backup and reload the restored configuration.'
+        }
+        [IO.File]::WriteAllText($subscription, "mixed-port: 7891`n")
+        & "$temporaryDirectory/update.ps1"
+        if ([IO.File]::ReadAllText($configuration) -cne [IO.File]::ReadAllText($subscription)) {
+            throw 'Successful update did not activate the downloaded configuration.'
+        }
+        $reloads = [IO.File]::ReadAllText($reloadLog)
+        & "$temporaryDirectory/update.ps1"
+        if ([IO.File]::ReadAllText($reloadLog) -cne $reloads -or
+            @(Get-ChildItem $temporaryDirectory -Filter '.update-*.yaml' -Force).Count -ne 0) {
+            throw 'Unchanged update reloaded the configuration or left temporary files.'
+        }
+        Write-Output 'PowerShell update rollback checks passed.'
+    } finally {
+        Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+}
 if (-not $Lifecycle) {
     return
 }
@@ -137,14 +220,14 @@ try {
     }
     foreach ($badConfiguration in @('invalid', 'fail-start')) {
         Set-Content $env:MAGIC_TEST_SUBSCRIPTION $badConfiguration
-        $failed = $false
+        $failure = $null
         try {
             & "$temporaryDirectory/update.ps1" -System
         } catch {
-            $failed = $true
+            $failure = $_
         }
-        if (-not $failed -or [IO.File]::ReadAllText($configuration) -ne $original) {
-            throw 'Update rollback failed.'
+        if (-not $failure -or [IO.File]::ReadAllText($configuration) -ne $original) {
+            throw "Update rollback failed for '$badConfiguration': $failure"
         }
     }
     Set-Content $env:MAGIC_TEST_SUBSCRIPTION 'mixed-port: 7891'

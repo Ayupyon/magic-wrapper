@@ -304,9 +304,9 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 The `Checks` workflow runs on Linux, macOS, and Windows. Unix lifecycle tests use
 isolated service, cron, and download fixtures without changing host registrations.
-PowerShell checks cover parsing and cron matching. A Windows-only lifecycle test
-downloads WinSW and exercises an actual system service using a fixture executable.
-Run it from Windows PowerShell as Administrator:
+PowerShell checks cover parsing, cron matching, and offline update rollback.
+A Windows-only lifecycle test downloads WinSW and exercises an actual system
+service using a fixture executable. Run it from Windows PowerShell as Administrator:
 
 ```powershell
 .\tests\test_windows.ps1 -Lifecycle

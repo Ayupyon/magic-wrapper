@@ -38,7 +38,7 @@ try {
         Reload-MagicConfiguration $context
     } catch {
         Copy-Item -LiteralPath $previousConfiguration -Destination $temporaryConfiguration -Force
-        [IO.File]::Replace($temporaryConfiguration, $activeConfiguration, $null)
+        [IO.File]::Replace($temporaryConfiguration, $activeConfiguration, [NullString]::Value)
         try {
             Reload-MagicConfiguration $context
         } catch {
