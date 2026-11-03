@@ -322,7 +322,9 @@ read_crontab() {
 }
 
 shell_quote() {
-    printf "'%s'" "${1//\'/\'\\\'\'}"
+    # Bash 3.2 preserves replacement quotes unless they come from a variable.
+    local escaped_apostrophe="'\\''"
+    printf "'%s'" "${1//\'/$escaped_apostrophe}"
 }
 
 write_schedule() {

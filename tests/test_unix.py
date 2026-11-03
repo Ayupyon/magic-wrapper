@@ -171,6 +171,41 @@ class UnixTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode == 0, case['valid'])
 
+    def test_shell_quote_round_trips_with_bash_32_compatibility(self):
+        values = (
+            '',
+            'plain',
+            'with spaces',
+            "home with 'quotes%",
+            "''",
+            r"""$HOME `id` $(id) "quoted" \path & * ;""",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                quoted = subprocess.run(
+                    [
+                        'bash',
+                        '-c',
+                        'source "$1"\nshell_quote "$2"',
+                        'test',
+                        str(ROOT / 'common.sh'),
+                        value,
+                    ],
+                    env={**self.environment, 'BASH_COMPAT': '3.2'},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                result = subprocess.run(
+                    ['/bin/sh', '-c', 'printf "%s" ' + quoted.stdout],
+                    env=self.environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, value)
+
     def test_install_update_reinstall_and_uninstall_preserve_unrelated_cron(self):
         cron = self.directory / 'crontab'
         original = '15 7 * * * echo user-task\n'

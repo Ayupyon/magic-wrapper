@@ -334,6 +334,7 @@ function Register-MagicTasks {
         $definition = @'
 <service>
   <id>MagicWrapper</id><name>Magic Mihomo wrapper</name>
+  <description>Runs Mihomo with the Magic wrapper configuration.</description>
   <executable>%BASE%\mihomo.exe</executable>
   <arguments>-d "%BASE%" -f "%BASE%\config.yaml"</arguments>
   <startmode>Automatic</startmode>
