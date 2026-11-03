@@ -1,0 +1,8 @@
+/.release/
+/dist/
+/mihomo
+/mihomo.exe
+/winsw.exe
+__pycache__/
+*.pyc
+.ruff_cache/

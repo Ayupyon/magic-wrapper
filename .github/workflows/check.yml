@@ -1,0 +1,31 @@
+name: Checks
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Python and Unix checks
+        shell: bash
+        run: |
+          bash -n common.sh run.sh install.sh update.sh uninstall.sh
+          python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: PowerShell checks
+        shell: pwsh
+        run: ./tests/test_windows.ps1
+      - name: Windows service lifecycle
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test_windows.ps1 -Lifecycle

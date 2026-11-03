@@ -1,0 +1,78 @@
+name: Nightly packages
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if upstream versions and wrapper contents are unchanged
+        type: boolean
+        default: false
+  push:
+    paths:
+      - '*.sh'
+      - '*.ps1'
+      - README.md
+      - scripts/release.py
+      - .github/workflows/nightly.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-packages
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep scheduled workflow enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/enable"
+
+  release:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_BUILD: ${{ inputs.force || false }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check upstream versions and published manifest
+        id: check
+        run: |
+          arguments=()
+          if [[ "$FORCE_BUILD" == true ]]; then
+            arguments+=(--force)
+          fi
+          python scripts/release.py check "${arguments[@]}"
+      - name: Check scripts
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          bash -n common.sh run.sh install.sh update.sh uninstall.sh
+          python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Install 7-Zip
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes 7zip
+      - name: Download and package all platforms
+        if: steps.check.outputs.changed == 'true'
+        run: python scripts/release.py build
+      - name: Publish nightly assets and manifest
+        if: steps.check.outputs.changed == 'true'
+        run: python scripts/release.py publish
