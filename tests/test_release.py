@@ -4,7 +4,6 @@ import gzip
 import hashlib
 import io
 import json
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -97,7 +96,14 @@ class ReleaseTest(unittest.TestCase):
             ):
                 release.publish()
             commands = [call.args[0] for call in run.call_args_list]
-            self.assertTrue(any(argument.endswith('.7z') for argument in commands[0]))
+            self.assertEqual(
+                {
+                    Path(argument).name
+                    for argument in commands[0]
+                    if argument.endswith('.zip')
+                },
+                {f'magic-{platform}.zip' for platform in release.PLATFORMS},
+            )
             self.assertTrue(
                 any(argument.endswith('manifest.json') for argument in commands[1])
             )
@@ -123,9 +129,6 @@ class ReleaseTest(unittest.TestCase):
                 release.publish()
             self.assertEqual(run.call_count, 1)
 
-    @unittest.skipUnless(
-        shutil.which('7z') or shutil.which('7zz'), '7-Zip not available'
-    )
     def test_build_creates_all_four_valid_archives_offline(self):
         binary = b'fixture mihomo binary'
         zipped = io.BytesIO()
@@ -171,8 +174,23 @@ class ReleaseTest(unittest.TestCase):
                 mock.patch.object(release, 'fetch', side_effect=downloads.__getitem__),
             ):
                 release.build()
-            self.assertEqual(len(list(output.glob('*.7z'))), 4)
-            self.assertEqual(len((output / 'SHA256SUMS').read_text().splitlines()), 4)
+            self.assertEqual(len(list(output.glob('*.zip'))), 4)
+            checksums = []
+            for platform in release.PLATFORMS:
+                archive_path = output / f'magic-{platform}.zip'
+                with zipfile.ZipFile(archive_path) as archive:
+                    self.assertIsNone(archive.testzip())
+                    is_windows = platform.startswith('windows')
+                    binary_name = 'mihomo.exe' if is_windows else 'mihomo'
+                    self.assertEqual(archive.read(binary_name), binary)
+                    if is_windows:
+                        self.assertEqual(archive.read('winsw.exe'), b'winsw')
+                checksums.append(
+                    f'{hashlib.sha256(archive_path.read_bytes()).hexdigest()}  {archive_path.name}'
+                )
+            self.assertEqual(
+                (output / 'SHA256SUMS').read_text().splitlines(), checksums
+            )
             manifest = json.loads((output / 'manifest.json').read_text())
             self.assertEqual(set(manifest['binaries']), set(release.PLATFORMS))
             self.assertEqual(

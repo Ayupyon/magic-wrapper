@@ -143,7 +143,7 @@ def check(force: bool) -> None:
     inputs = release_inputs(mihomo, winsw)
     changed = needs_build(previous, inputs, force)
     # A draft or incomplete release must be retried even if its manifest exists.
-    expected_assets = {f'magic-{platform}.7z' for platform in PLATFORMS} | {
+    expected_assets = {f'magic-{platform}.zip' for platform in PLATFORMS} | {
         'SHA256SUMS',
         'manifest.json',
     }
@@ -204,9 +204,6 @@ def build() -> None:
     state = json.loads((STATE / 'inputs.json').read_text(encoding='utf-8'))
     mihomo = state['mihomo']
     winsw = state['winsw']
-    seven_zip = shutil.which('7z') or shutil.which('7zz')
-    if not seven_zip:
-        raise RuntimeError('7-Zip is required to package releases.')
     OUTPUT.mkdir(exist_ok=True)
     mihomo_tag = urllib.parse.quote(mihomo['tag_name'], safe='')
     winsw_tag = urllib.parse.quote(winsw['tag_name'], safe='')
@@ -264,15 +261,14 @@ def build() -> None:
                 'wrapper_commit': manifest['wrapper_commit'],
             },
         )
-        archive = OUTPUT / f'magic-{platform}.7z'
-        archive.unlink(missing_ok=True)
-        subprocess.run(
-            [seven_zip, 'a', '-t7z', '-mx=5', str(archive), '.'], cwd=bundle, check=True
-        )
-        subprocess.run([seven_zip, 't', str(archive)], check=True)
+        archive = OUTPUT / f'magic-{platform}.zip'
+        shutil.make_archive(str(archive.with_suffix('')), 'zip', root_dir=bundle)
+        with zipfile.ZipFile(archive) as package:
+            if corrupted_file := package.testzip():
+                raise ValueError(f'Corrupt file in {archive.name}: {corrupted_file}')
     checksums = []
     for platform in PLATFORMS:
-        archive = OUTPUT / f'magic-{platform}.7z'
+        archive = OUTPUT / f'magic-{platform}.zip'
         checksums.append(
             f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}'
         )
@@ -312,7 +308,7 @@ def publish() -> None:
             ],
             check=True,
         )
-    archives = [str(OUTPUT / f'magic-{platform}.7z') for platform in PLATFORMS]
+    archives = [str(OUTPUT / f'magic-{platform}.zip') for platform in PLATFORMS]
     subprocess.run(
         [
             'gh',

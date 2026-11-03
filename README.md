@@ -256,10 +256,10 @@ all four packages:
 
 | Archive | Binary target |
 | --- | --- |
-| `magic-linux-x86_64.7z` | Linux amd64-v1 baseline |
-| `magic-linux-arm64.7z` | Linux arm64 |
-| `magic-windows-x86_64.7z` | Windows amd64-v1 baseline and self-contained WinSW x64 |
-| `magic-macos-arm64.7z` | macOS arm64 |
+| `magic-linux-x86_64.zip` | Linux amd64-v1 baseline |
+| `magic-linux-arm64.zip` | Linux arm64 |
+| `magic-windows-x86_64.zip` | Windows amd64-v1 baseline and self-contained WinSW x64 |
+| `magic-macos-arm64.zip` | macOS arm64 |
 
 Each archive contains platform scripts, this README, upstream licenses, and
 `versions.json` with source references. Release assets also include `SHA256SUMS`
@@ -286,8 +286,9 @@ enable it in Actions or run:
 gh workflow enable nightly.yml --repo OWNER/REPO
 ```
 
-Packaging requires Python 3.10+, GitHub CLI, and 7-Zip; the workflow supplies these
-tools. Local tests do not publish releases.
+Packaging requires Python 3.10+ and GitHub CLI; the workflow supplies these tools.
+ZIP archives are created and validated with Python's standard library. Local tests
+do not publish releases.
 
 ## Development checks
 
