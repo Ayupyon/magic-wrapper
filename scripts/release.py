@@ -225,7 +225,7 @@ def build() -> None:
         'binaries': {},
     }
     for platform, (architecture, suffix) in PLATFORMS.items():
-        bundle = STATE / platform
+        bundle = STATE / f'magic-{platform}'
         if bundle.exists():
             shutil.rmtree(bundle)
         bundle.mkdir()
@@ -262,7 +262,12 @@ def build() -> None:
             },
         )
         archive = OUTPUT / f'magic-{platform}.zip'
-        shutil.make_archive(str(archive.with_suffix('')), 'zip', root_dir=bundle)
+        shutil.make_archive(
+            str(archive.with_suffix('')),
+            'zip',
+            root_dir=bundle.parent,
+            base_dir=bundle.name,
+        )
         with zipfile.ZipFile(archive) as package:
             if corrupted_file := package.testzip():
                 raise ValueError(f'Corrupt file in {archive.name}: {corrupted_file}')

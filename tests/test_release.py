@@ -180,11 +180,16 @@ class ReleaseTest(unittest.TestCase):
                 archive_path = output / f'magic-{platform}.zip'
                 with zipfile.ZipFile(archive_path) as archive:
                     self.assertIsNone(archive.testzip())
+                    prefix = f'magic-{platform}/'
+                    self.assertTrue(
+                        all(name.startswith(prefix) for name in archive.namelist())
+                    )
+                    self.assertIn(prefix + 'versions.json', archive.namelist())
                     is_windows = platform.startswith('windows')
                     binary_name = 'mihomo.exe' if is_windows else 'mihomo'
-                    self.assertEqual(archive.read(binary_name), binary)
+                    self.assertEqual(archive.read(prefix + binary_name), binary)
                     if is_windows:
-                        self.assertEqual(archive.read('winsw.exe'), b'winsw')
+                        self.assertEqual(archive.read(prefix + 'winsw.exe'), b'winsw')
                 checksums.append(
                     f'{hashlib.sha256(archive_path.read_bytes()).hexdigest()}  {archive_path.name}'
                 )
@@ -194,7 +199,8 @@ class ReleaseTest(unittest.TestCase):
             manifest = json.loads((output / 'manifest.json').read_text())
             self.assertEqual(set(manifest['binaries']), set(release.PLATFORMS))
             self.assertEqual(
-                (state / 'windows-x86_64/winsw.exe').read_bytes(), b'winsw'
+                (state / 'magic-windows-x86_64/winsw.exe').read_bytes(),
+                b'winsw',
             )
 
 

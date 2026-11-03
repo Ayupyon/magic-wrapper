@@ -262,7 +262,9 @@ all four packages:
 | `magic-windows-x86_64.zip` | Windows amd64-v1 baseline and self-contained WinSW x64 |
 | `magic-macos-arm64.zip` | macOS arm64 |
 
-Each archive contains platform scripts, this README, upstream licenses, and
+Each archive contains a single top-level folder matching its filename without
+`.zip` (for example, `magic-linux-x86_64/`). Run installation commands from that
+folder. It contains platform scripts, this README, upstream licenses, and
 `versions.json` with source references. Release assets also include `SHA256SUMS`
 and a manifest recording binary hashes and the wrapper commit. Downloads use
 HTTPS and verify upstream digests when provided; some WinSW releases provide no
