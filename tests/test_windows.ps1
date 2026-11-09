@@ -231,6 +231,12 @@ using System.Net;
 public class MihomoFixture {
     public static int Main(string[] arguments) {
         if (Array.IndexOf(arguments, "-t") >= 0) {
+            string directory = arguments[Array.IndexOf(arguments, "-d") + 1];
+            foreach (string filename in new[] { "Country.mmdb", "GeoIP.dat", "GeoSite.dat" }) {
+                if (!File.Exists(Path.Combine(directory, filename))) {
+                    return 1;
+                }
+            }
             int configurationIndex = Array.IndexOf(arguments, "-f");
             return File.ReadAllText(arguments[configurationIndex + 1]).Contains("invalid") ? 1 : 0;
         }
@@ -264,6 +270,10 @@ public class MihomoFixture {
 }
 '@
 try {
+    $geodataFiles = @('Country.mmdb', 'GeoIP.dat', 'GeoSite.dat')
+    foreach ($filename in $geodataFiles) {
+        [IO.File]::WriteAllText((Join-Path $temporaryDirectory $filename), 'original')
+    }
     Add-Type -TypeDefinition $source -OutputAssembly "$temporaryDirectory/mihomo.exe" -OutputType ConsoleApplication
     $upstream = Invoke-RestMethod 'https://api.github.com/repos/winsw/winsw/releases/latest'
     $asset = @($upstream.assets | Where-Object { $_.name -eq 'WinSW-x64.exe' })
@@ -302,6 +312,33 @@ try {
         throw 'Configuration update restarted the service.'
     }
     $env:MAGIC_TEST_ANSWER = 'y'
+    foreach ($filename in $geodataFiles) {
+        if ([IO.File]::ReadAllText((Join-Path $env:MAGIC_TEST_DIRECTORY $filename)) -cne 'original') {
+            throw "Bundled database was not installed: $filename"
+        }
+        [IO.File]::WriteAllText((Join-Path $temporaryDirectory $filename), 'new')
+    }
+    foreach ($badConfiguration in @('invalid', 'fail-start')) {
+        Set-Content $env:MAGIC_TEST_SUBSCRIPTION $badConfiguration
+        $failure = $null
+        try {
+            & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *'
+        } catch {
+            $failure = $_
+        }
+        if (-not $failure) {
+            throw "Reinstall unexpectedly succeeded for '$badConfiguration'."
+        }
+        foreach ($filename in $geodataFiles) {
+            if ([IO.File]::ReadAllText((Join-Path $env:MAGIC_TEST_DIRECTORY $filename)) -cne 'original') {
+                throw "Reinstall did not restore database: $filename"
+            }
+        }
+        if ((Get-Service -Name 'MagicWrapper').Status -ne 'Running') {
+            throw 'Failed reinstall did not restore the previous service.'
+        }
+    }
+    Set-Content $env:MAGIC_TEST_SUBSCRIPTION 'mixed-port: 7891'
     & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'http://example.invalid/second' -Schedule '* * * * *'
     $settings = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'settings.json') -Raw | ConvertFrom-Json
     if ($settings.SubscriptionUrl -ne 'http://example.invalid/second') {
@@ -318,6 +355,11 @@ try {
     }
     if (-not (Test-Path $configuration)) {
         throw 'Uninstall removed configuration.'
+    }
+    foreach ($filename in $geodataFiles) {
+        if ([IO.File]::ReadAllText((Join-Path $env:MAGIC_TEST_DIRECTORY $filename)) -cne 'new') {
+            throw "Reinstall or uninstall did not preserve the new database: $filename"
+        }
     }
     Write-Output 'Windows WinSW lifecycle checks passed.'
 } finally {

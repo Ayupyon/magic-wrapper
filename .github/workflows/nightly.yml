@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Rebuild even if upstream versions and wrapper contents are unchanged
+        description: Rebuild even if upstream versions, geodata, and wrapper contents are unchanged
         type: boolean
         default: false
   push:
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Check upstream versions and published manifest
+      - name: Check upstream versions, geodata, and published manifest
         id: check
         run: |
           arguments=()

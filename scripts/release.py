@@ -20,6 +20,11 @@ STATE = ROOT / '.release'
 OUTPUT = ROOT / 'dist'
 UNIX_FILES = ('common.sh', 'run.sh', 'install.sh', 'update.sh', 'uninstall.sh')
 WINDOWS_FILES = ('common.ps1', 'run.ps1', 'install.ps1', 'update.ps1', 'uninstall.ps1')
+GEODATA_FILES = {
+    'Country.mmdb': 'country.mmdb',
+    'GeoIP.dat': 'geoip.dat',
+    'GeoSite.dat': 'geosite.dat',
+}
 PACKAGE_FILES = (
     *UNIX_FILES,
     *WINDOWS_FILES,
@@ -87,10 +92,19 @@ def wrapper_digest() -> str:
     return digest.hexdigest()
 
 
-def release_inputs(mihomo: dict[str, Any], winsw: dict[str, Any]) -> dict[str, Any]:
+def release_inputs(
+    mihomo: dict[str, Any], winsw: dict[str, Any], geodata: dict[str, Any]
+) -> dict[str, Any]:
+    geodata_inputs = {}
+    for filename, name in GEODATA_FILES.items():
+        asset = select_asset(geodata, name)
+        geodata_inputs[filename] = {
+            key: asset.get(key) for key in ('id', 'updated_at', 'size', 'digest')
+        }
     return {
         'mihomo': {'tag': mihomo['tag_name'], 'release_id': mihomo['id']},
         'winsw': {'tag': winsw['tag_name'], 'release_id': winsw['id']},
+        'geodata': geodata_inputs,
         'wrapper_sha256': wrapper_digest(),
     }
 
@@ -111,14 +125,16 @@ def check(force: bool) -> None:
     repository = os.environ['GITHUB_REPOSITORY']
     mihomo = github_json('repos/MetaCubeX/mihomo/releases/latest')
     winsw = github_json('repos/winsw/winsw/releases/latest')
-    assert mihomo is not None and winsw is not None
-    for release in (mihomo, winsw):
+    geodata = github_json('repos/MetaCubeX/meta-rules-dat/releases/tags/latest')
+    assert mihomo is not None and winsw is not None and geodata is not None
+    for release in (mihomo, winsw, geodata):
         if release['draft'] or release['prerelease']:
             raise ValueError('Expected a stable upstream release.')
     # Fail before publishing anything if upstream asset naming has changed.
     for architecture, suffix in PLATFORMS.values():
         select_asset(mihomo, f'mihomo-{architecture}-{mihomo["tag_name"]}{suffix}')
     select_asset(winsw, 'WinSW-x64.exe')
+    inputs = release_inputs(mihomo, winsw, geodata)
     current = github_json(f'repos/{repository}/releases/tags/nightly', missing_ok=True)
     previous = None
     if current and any(asset['name'] == 'manifest.json' for asset in current['assets']):
@@ -140,7 +156,6 @@ def check(force: bool) -> None:
             text=True,
         )
         previous = json.loads(result.stdout)
-    inputs = release_inputs(mihomo, winsw)
     changed = needs_build(previous, inputs, force)
     # A draft or incomplete release must be retried even if its manifest exists.
     expected_assets = {f'magic-{platform}.zip' for platform in PLATFORMS} | {
@@ -158,6 +173,7 @@ def check(force: bool) -> None:
         {
             'mihomo': mihomo,
             'winsw': winsw,
+            'geodata': geodata,
             'inputs': inputs,
             'release_exists': current is not None,
         },
@@ -168,7 +184,7 @@ def check(force: bool) -> None:
     print(
         'Packaging required.'
         if changed
-        else 'Upstream versions and wrapper contents are unchanged.'
+        else 'Upstream versions, geodata, and wrapper contents are unchanged.'
     )
 
 
@@ -204,9 +220,11 @@ def build() -> None:
     state = json.loads((STATE / 'inputs.json').read_text(encoding='utf-8'))
     mihomo = state['mihomo']
     winsw = state['winsw']
+    geodata = state['geodata']
     OUTPUT.mkdir(exist_ok=True)
     mihomo_tag = urllib.parse.quote(mihomo['tag_name'], safe='')
     winsw_tag = urllib.parse.quote(winsw['tag_name'], safe='')
+    geodata_tag = urllib.parse.quote(geodata['tag_name'], safe='')
     mihomo_license = fetch(
         f'https://raw.githubusercontent.com/MetaCubeX/mihomo/{mihomo_tag}/LICENSE'
     )
@@ -215,14 +233,34 @@ def build() -> None:
     )
     winsw_asset = select_asset(winsw, 'WinSW-x64.exe')
     winsw_binary = download_asset(winsw_asset)
+    geodata_license = fetch(
+        f'https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/{geodata_tag}/LICENSE'
+    )
+    geodata_assets = {
+        filename: select_asset(geodata, name)
+        for filename, name in GEODATA_FILES.items()
+    }
+    geodata_contents = {
+        filename: download_asset(asset) for filename, asset in geodata_assets.items()
+    }
     manifest: dict[str, Any] = {
         'inputs': state['inputs'],
         'wrapper_commit': os.environ.get('GITHUB_SHA', 'local'),
         'sources': {
             'mihomo': f'https://github.com/MetaCubeX/mihomo/tree/{mihomo_tag}',
             'winsw': f'https://github.com/winsw/winsw/tree/{winsw_tag}',
+            'geodata': f'https://github.com/MetaCubeX/meta-rules-dat/releases/tag/{geodata_tag}',
         },
         'binaries': {},
+        'geodata': {
+            filename: {
+                'asset': asset['name'],
+                'url': asset['browser_download_url'],
+                'sha256': hashlib.sha256(geodata_contents[filename]).hexdigest(),
+                'upstream_digest': asset.get('digest'),
+            }
+            for filename, asset in geodata_assets.items()
+        },
     }
     for platform, (architecture, suffix) in PLATFORMS.items():
         bundle = STATE / f'magic-{platform}'
@@ -241,6 +279,9 @@ def build() -> None:
         binary_path.write_bytes(binary)
         binary_path.chmod(0o755)
         (bundle / 'LICENSE-mihomo.txt').write_bytes(mihomo_license)
+        (bundle / 'LICENSE-geodata.txt').write_bytes(geodata_license)
+        for filename, content in geodata_contents.items():
+            (bundle / filename).write_bytes(content)
         manifest['binaries'][platform] = {
             'asset': asset['name'],
             'url': asset['browser_download_url'],
@@ -258,6 +299,7 @@ def build() -> None:
             {
                 'inputs': state['inputs'],
                 'sources': manifest['sources'],
+                'geodata': manifest['geodata'],
                 'wrapper_commit': manifest['wrapper_commit'],
             },
         )
@@ -282,7 +324,7 @@ def build() -> None:
     (STATE / 'notes.md').write_text(
         f'Mihomo: **{mihomo["tag_name"]}**; WinSW: **{winsw["tag_name"]}**.\n\n'
         f'Wrapper commit: `{manifest["wrapper_commit"]}`.\n\n'
-        'Packages are rebuilt only when upstream releases or wrapper contents change. '
+        'Packages are rebuilt when upstream releases, geodata, or wrapper contents change. '
         'See manifest.json for source references and SHA256SUMS for archive checksums.\n',
         encoding='utf-8',
     )

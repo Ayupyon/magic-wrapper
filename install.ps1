@@ -47,6 +47,11 @@ $managedFiles = @(
     'common.ps1', 'run.ps1', 'install.ps1', 'update.ps1', 'uninstall.ps1', 'mihomo.exe',
     'settings.json', 'config.yaml', 'controller.json'
 )
+foreach ($filename in @('Country.mmdb', 'GeoIP.dat', 'GeoSite.dat')) {
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot $filename) -PathType Leaf) {
+        $managedFiles += $filename
+    }
+}
 if ($System) {
     $managedFiles += @('winsw.exe', 'winsw.xml')
 }
@@ -55,7 +60,6 @@ $preserveBackup = $false
 try {
     $configuration = Join-Path $temporaryDirectory 'config.yaml'
     Save-Subscription $SubscriptionUrl $configuration
-    Assert-MagicConfiguration $context "$PSScriptRoot\mihomo.exe" $configuration
     $backupDirectory = Join-Path $temporaryDirectory 'previous'
     $null = New-Item -ItemType Directory -Path $backupDirectory
     foreach ($filename in $managedFiles) {
@@ -85,6 +89,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $temporaryDirectory $filename) `
             -Destination (Join-Path $context.Directory $filename) -Force
     }
+    Assert-MagicConfiguration $context (Join-Path $context.Directory 'mihomo.exe') $configuration
     $settings | ConvertTo-Json | Set-Content -LiteralPath $context.SettingsPath -Encoding UTF8
     Copy-Item -LiteralPath $configuration -Destination (Join-Path $context.Directory 'config.yaml') -Force
     Initialize-MagicController $context

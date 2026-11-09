@@ -65,9 +65,14 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 download_configuration "$subscription_url" "$temporary_directory/config.yaml"
-validate_configuration "$source_directory/mihomo" "$temporary_directory/config.yaml"
+package_files=(common.sh run.sh install.sh update.sh uninstall.sh mihomo)
+for filename in Country.mmdb GeoIP.dat GeoSite.dat; do
+    if [[ -f $source_directory/$filename ]]; then
+        package_files+=("$filename")
+    fi
+done
 managed_files=(
-    common.sh run.sh install.sh update.sh uninstall.sh mihomo
+    "${package_files[@]}"
     subscription-url schedule scope config.yaml controller.env
 )
 mkdir "$temporary_directory/previous"
@@ -115,11 +120,12 @@ trap rollback_installation EXIT
 if $previous_installation; then
     stop_service
 fi
-for filename in common.sh run.sh install.sh update.sh uninstall.sh mihomo; do
+for filename in "${package_files[@]}"; do
     cp "$source_directory/$filename" "$temporary_directory/$filename"
     chmod 700 "$temporary_directory/$filename"
     mv -f "$temporary_directory/$filename" "$installation_directory/$filename"
 done
+validate_configuration "$installation_directory/mihomo" "$temporary_directory/config.yaml"
 
 printf '%s\n' "$subscription_url" > "$installation_directory/subscription-url"
 printf '%s\n' "$schedule" > "$installation_directory/schedule"

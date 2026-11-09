@@ -14,8 +14,9 @@ require a system installation.
 ## Requirements
 
 Extract the package for your platform and keep its scripts together with the
-Mihomo executable. Windows packages also include the self-contained WinSW x64
-executable needed for system services.
+Mihomo executable and bundled `Country.mmdb`, `GeoIP.dat`, and `GeoSite.dat`
+databases. Windows packages also include the self-contained WinSW x64 executable
+needed for system services.
 
 | Platform | Required tools and services |
 | --- | --- |
@@ -86,11 +87,19 @@ an administrator can enable lingering for the intended account:
 sudo loginctl enable-linger YOUR_USERNAME
 ```
 
-Installation copies the executable and scripts into the selected location,
-downloads and validates the initial configuration, registers the service and
-update schedule, and starts Mihomo. Success requires both a process startup check
-and a controller reload check. The extracted package directory can then be
-removed.
+Installation downloads the initial configuration, copies the executable, scripts,
+and bundled databases into the selected location, validates the configuration,
+registers the service and update schedule, and starts Mihomo. Success requires
+both a process startup check and a controller reload check. The extracted package
+directory can then be removed.
+
+The bundled databases support both GeoIP modes and GEOSITE rules without an
+initial geodata download. Reinstallation replaces bundled databases and restores
+the previous files if installation fails. Manually assembled installations can
+omit these files and let Mihomo download missing databases. ASN data and external
+rule providers are not bundled. Packages contain a data snapshot; subscription
+updates do not replace it. Use Mihomo's `geo-auto-update: true` setting to keep
+installed databases current, or reinstall from a newer package.
 
 Reinstallation asks before replacing settings; pressing Enter or providing no
 input cancels. It stops and starts the service to replace executables and service
@@ -254,12 +263,16 @@ on relevant pushes to the default branch, and through manual dispatch. Enable
 Actions and push the project files to the default branch to activate the
 workflows. Packaging uses the latest stable releases of `MetaCubeX/mihomo` and
 `winsw/winsw`, excluding upstream prereleases.
+Geographic databases come from the rolling `latest` release of
+`MetaCubeX/meta-rules-dat`.
 
 The workflow compares upstream release IDs and tags and a digest of package
-inputs with `manifest.json` attached to the rolling `nightly` prerelease.
+inputs with `manifest.json` attached to the rolling `nightly` prerelease. It also
+compares the selected geodata assets' IDs, update times, sizes, and available
+digests, so updates to the same upstream release tag trigger a rebuild.
 Unchanged checks download no binaries and publish nothing. An upstream release,
-wrapper change, missing or incomplete release, or manual `force` input rebuilds
-all four packages:
+geodata update, wrapper change, missing or incomplete release, or manual `force`
+input rebuilds all four packages:
 
 | Archive | Binary target |
 | --- | --- |
@@ -270,12 +283,12 @@ all four packages:
 
 Each archive contains a single top-level folder matching its filename without
 `.zip` (for example, `magic-linux-x86_64/`). Run installation commands from that
-folder. It contains platform scripts, this README, upstream licenses, and
-`versions.json` with source references. Release assets also include `SHA256SUMS`
-and a manifest recording binary hashes and the wrapper commit. Downloads use
-HTTPS and verify upstream digests when provided; some WinSW releases provide no
-digest. Asset names must match the expected architecture and CPU baseline; a
-naming change fails packaging rather than selecting another target.
+folder. It contains platform scripts, the three databases, this README, upstream
+licenses, and `versions.json` with source references. Release assets also include
+`SHA256SUMS` and a manifest recording binary and geodata hashes and the wrapper
+commit. Downloads use HTTPS and verify upstream digests when provided; some WinSW
+releases provide no digest. Asset names must match the expected architecture and
+CPU baseline; a naming change fails packaging rather than selecting another target.
 
 All packages are built and their archives tested before upload. The manifest
 uploads last so an incomplete publication is retried on the next run. GitHub

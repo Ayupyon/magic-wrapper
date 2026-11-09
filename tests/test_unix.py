@@ -377,6 +377,57 @@ class UnixTest(unittest.TestCase):
         )
         self.assertTrue((self.directory / 'active').exists())
 
+    def test_bundled_geodata_is_available_during_validation_and_is_rolled_back(self):
+        filenames = ('Country.mmdb', 'GeoIP.dat', 'GeoSite.dat')
+        for filename in filenames:
+            (self.source / filename).write_text('original', encoding='utf-8')
+        binary = self.source / 'mihomo'
+        binary.write_text(
+            f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\n'
+            'directory = Path(sys.argv[sys.argv.index("-d") + 1])\n'
+            f'for filename in {filenames!r}:\n'
+            '    assert (directory / filename).read_text() in ("original", "new")\n'
+            'configuration = Path(sys.argv[sys.argv.index("-f") + 1])\n'
+            'sys.exit(1 if "invalid" in configuration.read_text() else 0)\n',
+            encoding='utf-8',
+        )
+        self.install()
+        for filename in filenames:
+            self.assertEqual((self.installation / filename).read_text(), 'original')
+            (self.source / filename).write_text('new', encoding='utf-8')
+        for bad_configuration in ('invalid', 'fail-start'):
+            with self.subTest(configuration=bad_configuration):
+                self.configuration.write_text(bad_configuration, encoding='utf-8')
+                self.run_script(
+                    'install.sh',
+                    'https://other.invalid/',
+                    '* * * * *',
+                    answer='y\n',
+                    succeeds=False,
+                )
+                for filename in filenames:
+                    self.assertEqual(
+                        (self.installation / filename).read_text(), 'original'
+                    )
+                self.assertTrue((self.directory / 'active').exists())
+        self.configuration.write_text('mixed-port: 7890\n', encoding='utf-8')
+        self.run_script(
+            'install.sh', 'https://other.invalid/', '* * * * *', answer='y\n'
+        )
+        self.run_script('uninstall.sh')
+        for filename in filenames:
+            self.assertEqual((self.installation / filename).read_text(), 'new')
+
+    def test_failed_initial_install_removes_bundled_geodata(self):
+        for filename in ('Country.mmdb', 'GeoIP.dat', 'GeoSite.dat'):
+            (self.source / filename).write_text('data', encoding='utf-8')
+        self.configuration.write_text('invalid', encoding='utf-8')
+        self.run_script(
+            'install.sh', 'https://example.invalid/', '* * * * *', succeeds=False
+        )
+        for filename in ('Country.mmdb', 'GeoIP.dat', 'GeoSite.dat'):
+            self.assertFalse((self.installation / filename).exists())
+
     def test_legacy_installation_requires_reinstall_without_changing_configuration(
         self,
     ):
