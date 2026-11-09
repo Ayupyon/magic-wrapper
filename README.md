@@ -65,6 +65,55 @@ For a system service, from an **Administrator** PowerShell window:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -System -SubscriptionUrl 'https://provider.example/subscription?token=YOUR_TOKEN' -Schedule '0 */6 * * *'
 ```
 
+### Controller arguments
+
+Both installers accept optional controller settings:
+
+```sh
+bash install.sh 'https://provider.example/subscription?token=YOUR_TOKEN' '0 */6 * * *' \
+  --controller-address '0.0.0.0:9090' \
+  --controller-secret "$CONTROLLER_SECRET"
+```
+
+```powershell
+.\install.ps1 -SubscriptionUrl 'https://provider.example/subscription?token=YOUR_TOKEN' `
+  -Schedule '0 */6 * * *' `
+  -ControllerAddress '0.0.0.0:9090' `
+  -ControllerSecret $ControllerSecret
+```
+
+Set the secret variable to your chosen value before running these examples. The
+address must be an IPv4 literal followed by a port from 1024 to 65535, without a
+URL scheme or path. Each IPv4 octet must be from 0 to 255 without leading zeros;
+hostnames and IPv6 are not supported. Use `127.0.0.1:9090` for local access,
+`192.168.1.10:9090` to bind to that address on the Mihomo machine, or
+`0.0.0.0:9090` to listen on all IPv4 interfaces. The default remains localhost.
+The secret must contain exactly 64 lowercase hexadecimal characters (`0-9`,
+`a-f`). Invalid values are rejected before downloads or installation changes.
+Unix options follow the subscription URL and schedule.
+
+Each setting is independent: an explicit argument replaces that setting; an
+omitted argument preserves its saved value, or generates one if none exists.
+Reinstallation uses the existing confirmation prompt, restarts Mihomo, and
+regenerates service settings, including Windows `winsw.xml`. A failed installation
+attempts to restore the previous credentials and service settings. Subscription
+updates preserve controller settings.
+
+Connect MetaCubeXD using the saved secret and the Mihomo machine's reachable
+address, for example `http://192.168.1.10:9090` for a dashboard on another machine.
+`0.0.0.0` is a listening wildcard; use the machine's LAN IP in the dashboard. A
+localhost controller can also be reached through SSH port forwarding.
+
+The controller is shared with automatic updates. Reload requests use the saved
+address directly, except that `0.0.0.0:PORT` is reached through
+`http://127.0.0.1:PORT`. Fixed addresses must be available on the Mihomo machine;
+startup or controller verification failure triggers an installation rollback
+attempt.
+
+Installer arguments can appear in shell history and process listings, even when
+the secret is passed through a variable. The wrapper keeps the secret out of
+generated scheduled commands and Mihomo command arguments.
+
 ### Installation scope and files
 
 | Platform | User installation | System installation |
@@ -148,7 +197,7 @@ reload, and rollback:
 1. Download the subscription to a temporary file and validate it with `mihomo -t`.
 2. Skip unchanged content without issuing a reload request.
 3. Save the previous configuration and atomically replace `config.yaml`.
-4. Reload Mihomo through its authenticated localhost controller.
+4. Reload Mihomo through its authenticated controller.
 5. If reload fails or times out, restore the previous file and attempt another
    reload. If that request also fails, report that runtime state needs manual
    recovery; the previous file remains on disk.
@@ -177,15 +226,23 @@ and [environment overrides](https://github.com/MetaCubeX/mihomo/blob/v1.19.33/ma
 
 ### Controller credentials and security
 
-The installer creates an installation-specific controller on `127.0.0.1` and a
-random 256-bit authentication secret. Unix selects a port in 49152–65535; Windows
-selects an available ephemeral port. Port selection does not reserve the port
-until startup. A collision causes the installation's controller check to fail
-and triggers a rollback attempt.
+The installer creates an installation-specific controller, defaulting to
+`127.0.0.1` unless an address is supplied or already saved. When not supplied or
+already saved, it generates a random 256-bit authentication secret and selects a
+port in 49152–65535 on Unix or an available ephemeral port on Windows. Port
+selection does not reserve the port until startup. A collision causes the
+installation's controller check to fail and triggers a rollback attempt.
 
-Credentials persist across reinstalls in `controller.env` on Unix and
-`controller.json` on Windows. These files inherit the installation's access
-restrictions; access to them grants controller API access.
+LAN and wildcard listening addresses require the same authentication secret as
+localhost. HTTP controller traffic, including the secret, is unencrypted. Limit
+network access to trusted clients with your firewall, and use SSH forwarding or
+another encrypted transport across untrusted networks. The wrapper does not
+configure firewall rules or TLS.
+
+Credentials persist in `controller.env` on Unix and `controller.json` on Windows.
+Reinstalls preserve them unless controller arguments override them. These files
+inherit the installation's access restrictions; access to them grants controller
+API access.
 
 Mihomo receives `CLASH_OVERRIDE_EXTERNAL_CONTROLLER` and `CLASH_OVERRIDE_SECRET`
 through its environment. These override the subscription's HTTP controller and

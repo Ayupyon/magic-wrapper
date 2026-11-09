@@ -6,11 +6,41 @@ source_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$source_directory/common.sh"
 initialize_context
 
-if [[ $# != 2 ]]; then
-    fail "Usage: $0 SUBSCRIPTION_URL 'MIN HOUR DAY MONTH WEEKDAY'"
+if [[ $# -lt 2 ]]; then
+    fail "Usage: $0 SUBSCRIPTION_URL 'MIN HOUR DAY MONTH WEEKDAY' [--controller-address HOST:PORT] [--controller-secret SECRET]"
 fi
 subscription_url=$1
 schedule=$2
+shift 2
+requested_controller_address=
+requested_controller_secret=
+while (( $# > 0 )); do
+    case $1 in
+        --controller-address)
+            if [[ $# -lt 2 || -n $requested_controller_address ]]; then
+                fail 'Provide --controller-address once with a value.'
+            fi
+            if ! validate_controller_address "$2"; then
+                fail 'Controller address must be an IPv4 address with a port from 1024 to 65535.'
+            fi
+            requested_controller_address=$2
+            shift 2
+            ;;
+        --controller-secret)
+            if [[ $# -lt 2 || -n $requested_controller_secret ]]; then
+                fail 'Provide --controller-secret once with a value.'
+            fi
+            if ! validate_controller_secret "$2"; then
+                fail 'Controller secret must contain exactly 64 lowercase hexadecimal characters.'
+            fi
+            requested_controller_secret=$2
+            shift 2
+            ;;
+        *)
+            fail 'Unknown installer argument; use --controller-address or --controller-secret after the URL and schedule.'
+            ;;
+    esac
+done
 validate_url "$subscription_url"
 if ! validate_cron "$schedule"; then
     fail 'Invalid cron expression. Use five numeric fields, with *, lists, ranges, and steps on * or ranges.'
@@ -131,7 +161,7 @@ printf '%s\n' "$subscription_url" > "$installation_directory/subscription-url"
 printf '%s\n' "$schedule" > "$installation_directory/schedule"
 printf '%s\n' "$scope" > "$installation_directory/scope"
 mv -f "$temporary_directory/config.yaml" "$installation_directory/config.yaml"
-initialize_controller
+initialize_controller "$requested_controller_address" "$requested_controller_secret"
 register_service
 write_schedule "$schedule"
 restart_service

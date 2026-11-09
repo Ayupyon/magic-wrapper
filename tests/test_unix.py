@@ -74,7 +74,10 @@ class UnixTest(unittest.TestCase):
                 header = sys.stdin.read()
                 assert credentials['CLASH_OVERRIDE_SECRET'] in header
                 assert credentials['CLASH_OVERRIDE_SECRET'] not in ' '.join(sys.argv)
-                controller_url = 'http://' + credentials['CLASH_OVERRIDE_EXTERNAL_CONTROLLER']
+                host, port = credentials['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'].split(':')
+                if host == '0.0.0.0':
+                    host = '127.0.0.1'
+                controller_url = 'http://' + host + ':' + port
                 assert '--noproxy' in sys.argv
                 assert sys.argv[-1] == controller_url + '/configs?force=true'
                 with (directory / 'reload-calls').open('a') as output:
@@ -153,6 +156,200 @@ class UnixTest(unittest.TestCase):
         self.run_script(
             'install.sh', 'https://example.invalid/sub?token=secret', '0 */6 * * *'
         )
+
+    def read_controller(self):
+        return dict(
+            line.split('=', 1)
+            for line in (self.installation / 'controller.env').read_text().splitlines()
+        )
+
+    def test_controller_address_validation_uses_the_shared_cases(self):
+        cases = json.loads(
+            (ROOT / 'tests/controller_address_cases.json').read_text(encoding='utf-8')
+        )
+        for case in cases:
+            with self.subTest(address=case['address']):
+                result = subprocess.run(
+                    [
+                        'bash',
+                        '-c',
+                        'source "$1"\nvalidate_controller_address "$2"',
+                        'test',
+                        str(ROOT / 'common.sh'),
+                        case['address'],
+                    ],
+                    env=self.environment,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode == 0, case['valid'], result.stderr)
+
+    def test_network_controller_addresses_survive_updates_reinstalls_and_rollback(self):
+        arguments = ('install.sh', 'https://example.invalid/', '* * * * *')
+        for address in ('192.168.1.10:9090', '0.0.0.0:9090'):
+            with self.subTest(address=address):
+                self.run_script(
+                    *arguments, '--controller-address', address, answer='y\n'
+                )
+                controller = self.read_controller()
+                self.assertEqual(
+                    controller['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'], address
+                )
+                self.configuration.write_text('mixed-port: 7891\n', encoding='utf-8')
+                self.run_script('update.sh')
+                self.assertEqual(self.read_controller(), controller)
+                self.run_script(*arguments, answer='y\n')
+                self.assertEqual(self.read_controller(), controller)
+                configuration = self.installation / 'config.yaml'
+                original = configuration.read_bytes()
+                self.configuration.write_text('fail-start', encoding='utf-8')
+                self.run_script('update.sh', succeeds=False)
+                self.assertEqual(configuration.read_bytes(), original)
+                self.assertEqual(self.read_controller(), controller)
+                self.run_script(
+                    *arguments,
+                    '--controller-address',
+                    '192.168.1.20:9090',
+                    answer='y\n',
+                    succeeds=False,
+                )
+                self.assertEqual(configuration.read_bytes(), original)
+                self.assertEqual(self.read_controller(), controller)
+                self.assertTrue((self.directory / 'active').exists())
+                self.configuration.write_text('mixed-port: 7890\n', encoding='utf-8')
+                self.run_script('update.sh')
+                self.assertEqual(self.read_controller(), controller)
+
+    def test_custom_controller_is_used_preserved_and_independently_overridden(self):
+        address = '127.0.0.1:9090'
+        secret = 'a1' * 32
+        arguments = ('install.sh', 'https://example.invalid/', '* * * * *')
+        self.run_script(
+            *arguments,
+            '--controller-address',
+            address,
+            '--controller-secret',
+            secret,
+        )
+        expected = {
+            'CLASH_OVERRIDE_EXTERNAL_CONTROLLER': address,
+            'CLASH_OVERRIDE_SECRET': secret,
+        }
+        self.assertEqual(self.read_controller(), expected)
+        self.assertEqual(
+            (self.installation / 'controller.env').stat().st_mode & 0o777, 0o600
+        )
+        binary = self.installation / 'mihomo'
+        binary.write_text(
+            f'#!{sys.executable}\nimport os\n'
+            f'assert os.environ["CLASH_OVERRIDE_EXTERNAL_CONTROLLER"] == {address!r}\n'
+            f'assert os.environ["CLASH_OVERRIDE_SECRET"] == {secret!r}\n',
+            encoding='utf-8',
+        )
+        self.run_script(str(self.installation / 'run.sh'))
+        self.run_script(*arguments, answer='y\n')
+        self.assertEqual(self.read_controller(), expected)
+        self.run_script(
+            *arguments, '--controller-address', '127.0.0.1:1024', answer='y\n'
+        )
+        expected['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'] = '127.0.0.1:1024'
+        self.assertEqual(self.read_controller(), expected)
+        self.run_script(*arguments, '--controller-secret', 'b2' * 32, answer='y\n')
+        expected['CLASH_OVERRIDE_SECRET'] = 'b2' * 32
+        self.assertEqual(self.read_controller(), expected)
+        self.configuration.write_text('mixed-port: 7891\n', encoding='utf-8')
+        self.run_script('update.sh')
+        self.assertEqual(self.read_controller(), expected)
+        commands = (self.directory / 'crontab').read_text() + (
+            self.home / '.config/systemd/user/magic-wrapper.service'
+        ).read_text()
+        self.assertNotIn(secret, commands)
+        self.assertNotIn(expected['CLASH_OVERRIDE_SECRET'], commands)
+
+    def test_address_only_install_generates_a_secret(self):
+        self.run_script(
+            'install.sh',
+            'https://example.invalid/',
+            '* * * * *',
+            '--controller-address',
+            '127.0.0.1:65535',
+        )
+        controller = self.read_controller()
+        self.assertEqual(
+            controller['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'], '127.0.0.1:65535'
+        )
+        self.assertRegex(controller['CLASH_OVERRIDE_SECRET'], r'^[0-9a-f]{64}$')
+
+    def test_secret_only_install_generates_an_address(self):
+        self.run_script(
+            'install.sh',
+            'https://example.invalid/',
+            '* * * * *',
+            '--controller-secret',
+            'c3' * 32,
+        )
+        controller = self.read_controller()
+        self.assertEqual(controller['CLASH_OVERRIDE_SECRET'], 'c3' * 32)
+        port = int(controller['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'].split(':')[1])
+        self.assertGreaterEqual(port, 49152)
+        self.assertLessEqual(port, 65535)
+
+    def test_invalid_controller_arguments_leave_installation_unchanged(self):
+        secret = 'a1' * 32
+        cases = [
+            ('--unknown', secret),
+            (secret,),
+            ('--controller-address',),
+            ('--controller-secret',),
+            (
+                '--controller-address',
+                '127.0.0.1:9090',
+                '--controller-address',
+                '127.0.0.1:9091',
+            ),
+            ('--controller-secret', secret, '--controller-secret', secret),
+        ]
+        cases.extend(
+            ('--controller-address', case['address'])
+            for case in json.loads(
+                (ROOT / 'tests/controller_address_cases.json').read_text(
+                    encoding='utf-8'
+                )
+            )
+            if not case['valid']
+        )
+        cases.extend(
+            ('--controller-secret', value)
+            for value in ('', 'a' * 63, 'a' * 65, 'A' * 64, 'g' * 64, secret + '\n')
+        )
+        for installed in (False, True):
+            if installed:
+                self.install()
+            paths = (
+                self.installation / 'controller.env',
+                self.installation / 'config.yaml',
+                self.directory / 'service-calls',
+                self.directory / 'crontab',
+            )
+            original = [path.read_bytes() if path.exists() else None for path in paths]
+            for arguments in cases:
+                with self.subTest(installed=installed, arguments=arguments):
+                    result = self.run_script(
+                        'install.sh',
+                        'https://example.invalid/',
+                        '* * * * *',
+                        *arguments,
+                        succeeds=False,
+                    )
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                    self.assertEqual(
+                        [
+                            path.read_bytes() if path.exists() else None
+                            for path in paths
+                        ],
+                        original,
+                    )
+                    self.assertEqual(self.installation.exists(), installed)
 
     def test_subscription_urls_require_http_or_https_without_newlines(self):
         cases = (
@@ -360,11 +557,16 @@ class UnixTest(unittest.TestCase):
         original_cron = (self.directory / 'crontab').read_bytes()
         original_url = (self.installation / 'subscription-url').read_bytes()
         original_configuration = (self.installation / 'config.yaml').read_bytes()
+        original_controller = (self.installation / 'controller.env').read_bytes()
         self.configuration.write_text('fail-start', encoding='utf-8')
         self.run_script(
             'install.sh',
             'https://other.invalid/',
             '* * * * *',
+            '--controller-address',
+            '127.0.0.1:9090',
+            '--controller-secret',
+            'd4' * 32,
             answer='y\n',
             succeeds=False,
         )
@@ -374,6 +576,9 @@ class UnixTest(unittest.TestCase):
         )
         self.assertEqual(
             (self.installation / 'config.yaml').read_bytes(), original_configuration
+        )
+        self.assertEqual(
+            (self.installation / 'controller.env').read_bytes(), original_controller
         )
         self.assertTrue((self.directory / 'active').exists())
 

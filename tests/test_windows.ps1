@@ -61,6 +61,98 @@ foreach ($url in @('ftp://example.invalid/', 'file:///tmp/sub', 'example.invalid
     }
 }
 
+$addressCases = Get-Content "$PSScriptRoot/controller_address_cases.json" -Raw | ConvertFrom-Json
+foreach ($case in $addressCases) {
+    $valid = $true
+    try {
+        Assert-MagicControllerAddress $case.address
+    } catch {
+        $valid = $false
+    }
+    if ($valid -ne $case.valid) {
+        throw "Incorrect controller address validation: $($case.address)"
+    }
+}
+
+& {
+    $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ('magic controller test-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $temporaryDirectory
+    try {
+        $context = [pscustomobject]@{ Directory = $temporaryDirectory }
+        Initialize-MagicController $context
+        $generated = Get-MagicController $temporaryDirectory
+        if ($generated.Address -notmatch '^127\.0\.0\.1:[0-9]+\z' -or
+            $generated.Secret -cnotmatch '^[0-9a-f]{64}\z') {
+            throw 'Default controller settings were not generated.'
+        }
+        $secret = 'a1' * 32
+        Initialize-MagicController $context -Address '192.168.1.10:9090' -Secret $secret
+        Initialize-MagicController $context
+        $controller = Get-MagicController $temporaryDirectory
+        if ($controller.Address -ne '192.168.1.10:9090' -or $controller.Secret -cne $secret) {
+            throw 'Custom controller settings were not saved or preserved.'
+        }
+        Initialize-MagicController $context -Address '0.0.0.0:1024'
+        $controller = Get-MagicController $temporaryDirectory
+        if ($controller.Address -ne '0.0.0.0:1024' -or $controller.Secret -cne $secret) {
+            throw 'Address override changed the saved secret.'
+        }
+        Initialize-MagicController $context -Secret ('b2' * 32)
+        $controller = Get-MagicController $temporaryDirectory
+        if ($controller.Address -ne '0.0.0.0:1024' -or $controller.Secret -cne ('b2' * 32)) {
+            throw 'Secret override changed the saved address.'
+        }
+        Remove-Item "$temporaryDirectory/controller.json"
+        Initialize-MagicController $context -Address '127.0.0.1:65535'
+        $controller = Get-MagicController $temporaryDirectory
+        if ($controller.Address -ne '127.0.0.1:65535' -or
+            $controller.Secret -cnotmatch '^[0-9a-f]{64}\z') {
+            throw 'Address-only installation did not generate a secret.'
+        }
+        Remove-Item "$temporaryDirectory/controller.json"
+        Initialize-MagicController $context -Secret $secret
+        $controller = Get-MagicController $temporaryDirectory
+        if ($controller.Address -notmatch '^127\.0\.0\.1:[0-9]+\z' -or $controller.Secret -cne $secret) {
+            throw 'Secret-only installation did not generate an address.'
+        }
+        Copy-Item "$root/common.ps1", "$root/install.ps1" $temporaryDirectory
+        Add-Content "$temporaryDirectory/common.ps1" @'
+function Get-MagicContext {
+    throw 'Controller arguments reached installation.'
+}
+'@
+        $cases = @(
+            @{ ControllerSecret = '' },
+            @{ ControllerSecret = 'a' * 63 },
+            @{ ControllerSecret = 'a' * 65 },
+            @{ ControllerSecret = 'A' * 64 },
+            @{ ControllerSecret = 'g' * 64 },
+            @{ ControllerSecret = $secret + "`n" },
+            @{ UnknownArgument = $secret }
+        )
+        foreach ($case in $addressCases | Where-Object { -not $_.valid }) {
+            $cases += @{ ControllerAddress = $case.address }
+        }
+        foreach ($arguments in $cases) {
+            $failure = $null
+            try {
+                & "$temporaryDirectory/install.ps1" -SubscriptionUrl 'https://example.invalid/' -Schedule '* * * * *' @arguments
+            } catch {
+                $failure = $_
+            }
+            if (-not $failure -or $failure.Exception.Message -eq 'Controller arguments reached installation.') {
+                throw 'Invalid controller arguments reached installation.'
+            }
+            if ($failure.Exception.Message.Contains($secret)) {
+                throw 'Controller validation exposed the secret.'
+            }
+        }
+        Write-Output 'PowerShell controller argument checks passed.'
+    } finally {
+        Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+}
+
 & {
     $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ('magic prompt test-' + [Guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $temporaryDirectory
@@ -244,9 +336,14 @@ public class MihomoFixture {
         if (File.ReadAllText(configuration).Contains("fail-start")) {
             return 1;
         }
+        string controllerAddress = Environment.GetEnvironmentVariable("CLASH_OVERRIDE_EXTERNAL_CONTROLLER");
+        string expectedHost = controllerAddress.Split(':')[0];
+        if (expectedHost == "0.0.0.0") {
+            expectedHost = "127.0.0.1";
+            controllerAddress = "+:" + controllerAddress.Split(':')[1];
+        }
         HttpListener listener = new HttpListener();
-        listener.Prefixes.Add(
-            "http://" + Environment.GetEnvironmentVariable("CLASH_OVERRIDE_EXTERNAL_CONTROLLER") + "/");
+        listener.Prefixes.Add("http://" + controllerAddress + "/");
         listener.Start();
         while (true) {
             HttpListenerContext request = listener.GetContext();
@@ -254,6 +351,7 @@ public class MihomoFixture {
             bool authenticated = request.Request.Headers["Authorization"] ==
                 "Bearer " + Environment.GetEnvironmentVariable("CLASH_OVERRIDE_SECRET");
             bool reload = request.Request.HttpMethod == "PUT" &&
+                request.Request.Url.Host == expectedHost &&
                 request.Request.RawUrl == "/configs?force=true";
             if (!authenticated) {
                 request.Response.StatusCode = 401;
@@ -282,14 +380,42 @@ try {
     }
     Invoke-WebRequest -UseBasicParsing $asset[0].browser_download_url -OutFile "$temporaryDirectory/winsw.exe"
     Set-Content $env:MAGIC_TEST_SUBSCRIPTION 'mixed-port: 7890'
-    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/first' -Schedule '0 */6 * * *'
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $controllerAddress = "0.0.0.0:$($listener.LocalEndpoint.Port)"
+    } finally {
+        $listener.Stop()
+    }
+    $controllerSecret = 'a1' * 32
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/first' -Schedule '0 */6 * * *' `
+        -ControllerAddress $controllerAddress -ControllerSecret $controllerSecret
+    $controllerPath = Join-Path $env:MAGIC_TEST_DIRECTORY 'controller.json'
+    $originalController = [IO.File]::ReadAllText($controllerPath)
+    $controller = Get-Content $controllerPath -Raw | ConvertFrom-Json
+    if ($controller.Address -ne $controllerAddress -or $controller.Secret -cne $controllerSecret) {
+        throw 'Installer did not save the custom controller settings.'
+    }
+    [xml]$serviceDefinition = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'winsw.xml') -Raw
+    if (@($serviceDefinition.service.env | Where-Object { $_.name -eq 'CLASH_OVERRIDE_EXTERNAL_CONTROLLER' })[0].value -ne $controllerAddress -or
+        @($serviceDefinition.service.env | Where-Object { $_.name -eq 'CLASH_OVERRIDE_SECRET' })[0].value -cne $controllerSecret) {
+        throw 'WinSW did not receive the custom controller settings.'
+    }
+    if ($serviceDefinition.service.arguments.Contains($controllerSecret) -or
+        (Export-ScheduledTask -TaskName 'MagicWrapper-Update').Contains($controllerSecret)) {
+        throw 'Controller secret was exposed in service arguments or the update task.'
+    }
     $configuration = Join-Path $env:MAGIC_TEST_DIRECTORY 'config.yaml'
     $original = [IO.File]::ReadAllText($configuration)
     $processIdBeforeUpdate = (Get-CimInstance Win32_Service -Filter "Name='MagicWrapper'").ProcessId
-    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *'
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *' `
+        -ControllerAddress '127.0.0.1:9090' -ControllerSecret ('b2' * 32)
     $settings = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'settings.json') -Raw | ConvertFrom-Json
     if ($settings.SubscriptionUrl -ne 'https://example.invalid/first') {
         throw 'Reinstall refusal changed settings.'
+    }
+    if ([IO.File]::ReadAllText($controllerPath) -cne $originalController) {
+        throw 'Reinstall refusal changed controller settings.'
     }
     foreach ($badConfiguration in @('invalid', 'fail-start')) {
         Set-Content $env:MAGIC_TEST_SUBSCRIPTION $badConfiguration
@@ -311,6 +437,9 @@ try {
     if ((Get-CimInstance Win32_Service -Filter "Name='MagicWrapper'").ProcessId -ne $processIdBeforeUpdate) {
         throw 'Configuration update restarted the service.'
     }
+    if ([IO.File]::ReadAllText($controllerPath) -cne $originalController) {
+        throw 'Subscription update changed controller settings.'
+    }
     $env:MAGIC_TEST_ANSWER = 'y'
     foreach ($filename in $geodataFiles) {
         if ([IO.File]::ReadAllText((Join-Path $env:MAGIC_TEST_DIRECTORY $filename)) -cne 'original') {
@@ -322,7 +451,8 @@ try {
         Set-Content $env:MAGIC_TEST_SUBSCRIPTION $badConfiguration
         $failure = $null
         try {
-            & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *'
+            & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *' `
+                -ControllerAddress '127.0.0.1:9090' -ControllerSecret ('b2' * 32)
         } catch {
             $failure = $_
         }
@@ -337,12 +467,26 @@ try {
         if ((Get-Service -Name 'MagicWrapper').Status -ne 'Running') {
             throw 'Failed reinstall did not restore the previous service.'
         }
+        if ([IO.File]::ReadAllText($controllerPath) -cne $originalController) {
+            throw 'Failed reinstall did not restore controller settings.'
+        }
+        Reload-MagicConfiguration ([pscustomobject]@{ Directory = $env:MAGIC_TEST_DIRECTORY })
     }
     Set-Content $env:MAGIC_TEST_SUBSCRIPTION 'mixed-port: 7891'
     & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'http://example.invalid/second' -Schedule '* * * * *'
     $settings = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'settings.json') -Raw | ConvertFrom-Json
     if ($settings.SubscriptionUrl -ne 'http://example.invalid/second') {
         throw 'HTTP reinstall did not save the subscription URL.'
+    }
+    $controller = Get-Content $controllerPath -Raw | ConvertFrom-Json
+    if ($controller.Address -ne $controllerAddress -or $controller.Secret -cne $controllerSecret) {
+        throw 'Reinstall did not preserve controller settings.'
+    }
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *' `
+        -ControllerSecret ('b2' * 32)
+    $controller = Get-Content $controllerPath -Raw | ConvertFrom-Json
+    if ($controller.Address -ne $controllerAddress -or $controller.Secret -cne ('b2' * 32)) {
+        throw 'Secret-only reinstall did not preserve the controller address.'
     }
     & "$temporaryDirectory/update.ps1" -System
     & "$temporaryDirectory/uninstall.ps1" -System

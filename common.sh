@@ -5,6 +5,25 @@ fail() {
     exit 1
 }
 
+validate_controller_address() {
+    local host_address=${1%:*} octet
+    local -a octets
+    if [[ ! $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{4,5}$ ]]; then
+        return 1
+    fi
+    IFS=. read -r -a octets <<< "$host_address"
+    for octet in "${octets[@]}"; do
+        if (( 10#$octet > 255 )) || [[ ${#octet} -gt 1 && $octet == 0* ]]; then
+            return 1
+        fi
+    done
+    (( 10#${1##*:} >= 1024 && 10#${1##*:} <= 65535 ))
+}
+
+validate_controller_secret() {
+    [[ $1 =~ ^[0-9a-f]{64}$ ]]
+}
+
 load_controller() {
     if [[ ! -f $installation_directory/controller.env ]]; then
         printf '%s\n' 'Reinstall the wrapper to enable configuration reload.' >&2
@@ -12,21 +31,31 @@ load_controller() {
     fi
     controller_address=$(sed -n 's/^CLASH_OVERRIDE_EXTERNAL_CONTROLLER=//p' "$installation_directory/controller.env")
     controller_secret=$(sed -n 's/^CLASH_OVERRIDE_SECRET=//p' "$installation_directory/controller.env")
-    if ! [[ $controller_address =~ ^127\.0\.0\.1:([0-9]{4,5})$ && $controller_secret =~ ^[0-9a-f]{64}$ ]]; then
-        return 1
-    fi
-    (( ${controller_address##*:} >= 1024 && ${controller_address##*:} <= 65535 ))
+    validate_controller_address "$controller_address" && validate_controller_secret "$controller_secret"
 }
 
 initialize_controller() {
-    if [[ ! -f $installation_directory/controller.env ]]; then
-        local random_port secret
-        random_port=$(od -An -N2 -tu2 /dev/urandom)
-        secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-        printf 'CLASH_OVERRIDE_EXTERNAL_CONTROLLER=127.0.0.1:%s\nCLASH_OVERRIDE_SECRET=%s\n' \
-            "$((49152 + random_port % 16384))" "$secret" > "$installation_directory/controller.env"
-        chmod 600 "$installation_directory/controller.env"
+    local address=${1:-} secret=${2:-} random_port
+    if [[ -f $installation_directory/controller.env ]]; then
+        if ! load_controller; then
+            fail 'Invalid controller settings.'
+        fi
+        address=${address:-$controller_address}
+        secret=${secret:-$controller_secret}
     fi
+    if [[ -z $address ]]; then
+        random_port=$(od -An -N2 -tu2 /dev/urandom)
+        address="127.0.0.1:$((49152 + random_port % 16384))"
+    fi
+    if [[ -z $secret ]]; then
+        secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    fi
+    if ! validate_controller_address "$address" || ! validate_controller_secret "$secret"; then
+        fail 'Invalid controller settings.'
+    fi
+    printf 'CLASH_OVERRIDE_EXTERNAL_CONTROLLER=%s\nCLASH_OVERRIDE_SECRET=%s\n' \
+        "$address" "$secret" > "$installation_directory/controller.env"
+    chmod 600 "$installation_directory/controller.env"
     load_controller
 }
 
@@ -34,11 +63,14 @@ reload_configuration() {
     if ! load_controller; then
         return 1
     fi
-    local http_status
+    local http_status reload_address=$controller_address
+    if [[ $reload_address == 0.0.0.0:* ]]; then
+        reload_address="127.0.0.1:${reload_address##*:}"
+    fi
     http_status=$(printf 'header = "Authorization: Bearer %s"\n' "$controller_secret" | \
         curl --config - --noproxy '*' --silent --show-error --connect-timeout 5 --max-time 120 \
         --request PUT --header 'Content-Type: application/json' --data '{"path":""}' \
-        --output /dev/null --write-out '%{http_code}' "http://$controller_address/configs?force=true") || return 1
+        --output /dev/null --write-out '%{http_code}' "http://$reload_address/configs?force=true") || return 1
     [[ $http_status == 204 ]]
 }
 

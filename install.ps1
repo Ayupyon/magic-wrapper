@@ -2,10 +2,18 @@
 param(
     [Parameter(Mandatory = $true)][string]$SubscriptionUrl,
     [Parameter(Mandatory = $true)][string]$Schedule,
-    [switch]$System
+    [switch]$System,
+    [string]$ControllerAddress,
+    [string]$ControllerSecret
 )
 
 . "$PSScriptRoot\common.ps1"
+if ($PSBoundParameters.ContainsKey('ControllerAddress')) {
+    Assert-MagicControllerAddress $ControllerAddress
+}
+if ($PSBoundParameters.ContainsKey('ControllerSecret')) {
+    Assert-MagicControllerSecret $ControllerSecret
+}
 $context = Get-MagicContext -System:$System
 
 Assert-SubscriptionUrl $SubscriptionUrl
@@ -92,7 +100,7 @@ try {
     Assert-MagicConfiguration $context (Join-Path $context.Directory 'mihomo.exe') $configuration
     $settings | ConvertTo-Json | Set-Content -LiteralPath $context.SettingsPath -Encoding UTF8
     Copy-Item -LiteralPath $configuration -Destination (Join-Path $context.Directory 'config.yaml') -Force
-    Initialize-MagicController $context
+    Initialize-MagicController $context -Address $ControllerAddress -Secret $ControllerSecret
     Register-MagicTasks $context
     Restart-MagicService $context
     Reload-MagicConfiguration $context

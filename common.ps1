@@ -1,6 +1,26 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-MagicControllerAddress {
+    param([string]$Address)
+    if ($Address -notmatch '^([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([0-9]{4,5})\z' -or
+        [int]$Matches[2] -lt 1024 -or [int]$Matches[2] -gt 65535) {
+        throw 'Controller address must be an IPv4 address with a port from 1024 to 65535.'
+    }
+    foreach ($octet in $Matches[1].Split('.')) {
+        if ([int]$octet -gt 255 -or ($octet.Length -gt 1 -and $octet.StartsWith('0'))) {
+            throw 'Controller address must be an IPv4 address with a port from 1024 to 65535.'
+        }
+    }
+}
+
+function Assert-MagicControllerSecret {
+    param([string]$Secret)
+    if ($Secret -cnotmatch '^[0-9a-f]{64}\z') {
+        throw 'Controller secret must contain exactly 64 lowercase hexadecimal characters.'
+    }
+}
+
 function Get-MagicController {
     param([string]$Directory)
     $controllerPath = Join-Path $Directory 'controller.json'
@@ -8,18 +28,24 @@ function Get-MagicController {
         throw 'Reinstall the wrapper to enable configuration reload.'
     }
     $controller = Get-Content -LiteralPath $controllerPath -Raw | ConvertFrom-Json
-    if ($controller.Address -notmatch '^127\.0\.0\.1:([0-9]{4,5})$' -or
-        [int]$Matches[1] -lt 1024 -or [int]$Matches[1] -gt 65535 -or
-        $controller.Secret -cnotmatch '^[0-9a-f]{64}$') {
-        throw 'Invalid controller settings.'
-    }
+    Assert-MagicControllerAddress $controller.Address
+    Assert-MagicControllerSecret $controller.Secret
     $controller
 }
 
 function Initialize-MagicController {
-    param($Context)
+    param($Context, [string]$Address, [string]$Secret)
     $controllerPath = Join-Path $Context.Directory 'controller.json'
-    if (-not (Test-Path -LiteralPath $controllerPath)) {
+    if (Test-Path -LiteralPath $controllerPath) {
+        $controller = Get-MagicController $Context.Directory
+        if (-not $Address) {
+            $Address = $controller.Address
+        }
+        if (-not $Secret) {
+            $Secret = $controller.Secret
+        }
+    }
+    if (-not $Address) {
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
         try {
             $listener.Start()
@@ -27,6 +53,9 @@ function Initialize-MagicController {
         } finally {
             $listener.Stop()
         }
+        $Address = "127.0.0.1:$port"
+    }
+    if (-not $Secret) {
         $secretBytes = [byte[]]::new(32)
         $random = [Security.Cryptography.RandomNumberGenerator]::Create()
         try {
@@ -34,17 +63,21 @@ function Initialize-MagicController {
         } finally {
             $random.Dispose()
         }
-        @{
-            Address = "127.0.0.1:$port"
-            Secret = [BitConverter]::ToString($secretBytes).Replace('-', '').ToLowerInvariant()
-        } | ConvertTo-Json | Set-Content -LiteralPath $controllerPath -Encoding UTF8
+        $Secret = [BitConverter]::ToString($secretBytes).Replace('-', '').ToLowerInvariant()
     }
+    Assert-MagicControllerAddress $Address
+    Assert-MagicControllerSecret $Secret
+    @{
+        Address = $Address
+        Secret = $Secret
+    } | ConvertTo-Json | Set-Content -LiteralPath $controllerPath -Encoding UTF8
     $null = Get-MagicController $Context.Directory
 }
 
 function Reload-MagicConfiguration {
     param($Context)
     $controller = Get-MagicController $Context.Directory
+    $reloadAddress = $controller.Address -replace '^0\.0\.0\.0:', '127.0.0.1:'
     Add-Type -AssemblyName System.Net.Http
     $handler = [Net.Http.HttpClientHandler]::new()
     $handler.UseProxy = $false
@@ -56,7 +89,7 @@ function Reload-MagicConfiguration {
         $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new(
             'Bearer', $controller.Secret)
         $response = $client.PutAsync(
-            "http://$($controller.Address)/configs?force=true", $content).GetAwaiter().GetResult()
+            "http://$reloadAddress/configs?force=true", $content).GetAwaiter().GetResult()
         try {
             if ([int]$response.StatusCode -ne 204) {
                 throw 'Mihomo rejected the configuration reload.'
