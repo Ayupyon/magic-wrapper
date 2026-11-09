@@ -1,9 +1,9 @@
 # Magic wrapper
 
 Magic wrapper installs Mihomo as a background service and keeps its configuration
-up to date from an HTTPS subscription URL. Linux and macOS use Bash and native
-cron. Windows uses Windows PowerShell 5.1, Task Scheduler, and WinSW for system
-services. Installed machines do not need Python.
+up to date from an HTTP or HTTPS subscription URL. Linux and macOS use Bash and
+native cron. Windows uses Windows PowerShell 5.1, Task Scheduler, and WinSW for
+system services. Installed machines do not need Python.
 
 The subscription must return a **complete Mihomo YAML configuration**. Proxy lists
 and base64 subscriptions need conversion before use. The wrapper manages the
@@ -27,6 +27,12 @@ executable needed for system services.
 
 Run these commands from the extracted package directory. Replace the example URL
 with your subscription URL. The example schedule updates every six hours.
+
+HTTPS is recommended. For an `http://` subscription URL, the installer warns that
+tokens and configuration can be read or modified in transit and requires `y` or
+`Y` to continue. Pressing Enter or providing no input cancels before downloading
+or changing the installation. Reinstalling with HTTP requires confirmation again;
+configuration updates use the saved URL without prompting.
 
 ### Linux and macOS
 
@@ -142,7 +148,7 @@ Download or validation failures leave the active configuration unchanged.
 Configuration updates keep the process running and do not fall back to a restart.
 Subscription downloads during installation and updates send `User-Agent: clash.meta`,
 bypass proxy settings, and connect directly to the subscription server, including
-after HTTPS redirects.
+after redirects. Redirect following is delegated to curl or .NET.
 
 ### Reload protocol and guarantees
 
@@ -306,7 +312,8 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 The `Checks` workflow runs on Linux, macOS, and Windows. Unix lifecycle tests use
 isolated service, cron, and download fixtures without changing host registrations.
-PowerShell checks cover parsing, cron matching, and offline update rollback.
+PowerShell checks cover parsing, URL validation, HTTP installation confirmation,
+cron matching, and offline update rollback.
 A Windows-only lifecycle test downloads WinSW and exercises an actual system
 service using a fixture executable. Run it from Windows PowerShell as Administrator:
 

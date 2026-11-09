@@ -90,8 +90,9 @@ initialize_context() {
 
 validate_url() {
     local subscription_url=$1
-    if [[ $subscription_url != https://?* || $subscription_url == *$'\n'* || $subscription_url == *$'\r'* ]]; then
-        fail 'The subscription URL must be an HTTPS URL without newlines.'
+    if [[ ( $subscription_url != http://?* && $subscription_url != https://?* ) ||
+        $subscription_url == *$'\n'* || $subscription_url == *$'\r'* ]]; then
+        fail 'The subscription URL must be an HTTP or HTTPS URL without newlines.'
     fi
 }
 
@@ -349,7 +350,7 @@ download_configuration() {
     escaped_url=${escaped_url//\"/\\\"}
     # Keep subscription tokens out of the download process's command line.
     if ! printf 'url = "%s"\n' "$escaped_url" | curl --config - --noproxy '*' \
-        --fail --silent --show-error --location --user-agent 'clash.meta' --proto '=https' --proto-redir '=https' \
+        --fail --silent --show-error --location --user-agent 'clash.meta' --proto '=http,https' --proto-redir '=http,https' \
         --connect-timeout 15 --max-time 120 --retry 2 --output "$destination" \
         2> "$temporary_directory/download.error"; then
         printf '%s\n' 'Subscription download failed; the active configuration was preserved.' >&2

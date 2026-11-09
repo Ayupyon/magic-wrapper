@@ -45,6 +45,69 @@ foreach ($case in $cases) {
 }
 Write-Output 'PowerShell parsing and cron checks passed.'
 
+foreach ($url in @('http://example.invalid/', 'https://example.invalid/')) {
+    Assert-SubscriptionUrl $url
+}
+foreach ($url in @('ftp://example.invalid/', 'file:///tmp/sub', 'example.invalid/sub',
+    'http://', 'https://', "http://example.invalid/`nother", "https://example.invalid/`rother")) {
+    $rejected = $false
+    try {
+        Assert-SubscriptionUrl $url
+    } catch {
+        $rejected = $true
+    }
+    if (-not $rejected) {
+        throw "Invalid subscription URL accepted: $url"
+    }
+}
+
+& {
+    $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ('magic prompt test-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $temporaryDirectory
+    try {
+        Copy-Item "$root/common.ps1", "$root/install.ps1" $temporaryDirectory
+        $overrides = @'
+function Get-MagicContext {
+    param([switch]$System)
+    [pscustomobject]@{ SettingsPath = Join-Path $PSScriptRoot 'settings.json' }
+}
+function Read-Host {
+    param([string]$Prompt)
+    if ($Prompt -ne 'Install using this HTTP subscription anyway? [y/N]') {
+        throw "Unexpected prompt: $Prompt"
+    }
+    [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'answer'))
+}
+'@
+        Add-Content -LiteralPath "$temporaryDirectory/common.ps1" -Value $overrides
+        foreach ($answer in @('', 'n', 'yes', 'y', 'Y')) {
+            [IO.File]::WriteAllText("$temporaryDirectory/answer", $answer)
+            $output = $null
+            $failure = $null
+            try {
+                $output = & "$temporaryDirectory/install.ps1" -SubscriptionUrl 'http://example.invalid/' -Schedule '* * * * *' 3>&1
+            } catch {
+                $failure = $_
+            }
+            if ($answer -cin @('y', 'Y')) {
+                if (-not $failure -or $failure.Exception.Message -ne 'Place mihomo.exe beside install.ps1.') {
+                    throw "HTTP consent did not reach the installer prerequisite check: $failure"
+                }
+            } elseif ($failure -or ($output | Out-String) -notmatch 'Installation cancelled\.') {
+                throw "HTTP install proceeded without explicit consent: $answer, $failure"
+            } elseif (($output | Out-String) -notmatch 'HTTP is unencrypted') {
+                throw 'HTTP install did not warn about unencrypted transport.'
+            }
+        }
+        if (Test-Path -LiteralPath "$temporaryDirectory/settings.json") {
+            throw 'HTTP prompt checks changed installation settings.'
+        }
+        Write-Output 'PowerShell HTTP confirmation checks passed.'
+    } finally {
+        Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+}
+
 & {
     $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ('magic update test-' + [Guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $temporaryDirectory
@@ -79,7 +142,7 @@ function Reload-MagicConfiguration {
 }
 '@
         Add-Content -LiteralPath "$temporaryDirectory/common.ps1" -Value $overrides
-        @{ SubscriptionUrl = 'https://example.invalid/'; Schedule = '* * * * *'; System = $false } |
+        @{ SubscriptionUrl = 'http://example.invalid/'; Schedule = '* * * * *'; System = $false } |
             ConvertTo-Json | Set-Content "$temporaryDirectory/settings.json"
         @{ Address = '127.0.0.1:12345'; Secret = ('a' * 64) } |
             ConvertTo-Json | Set-Content "$temporaryDirectory/controller.json"
@@ -239,7 +302,12 @@ try {
         throw 'Configuration update restarted the service.'
     }
     $env:MAGIC_TEST_ANSWER = 'y'
-    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *'
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'http://example.invalid/second' -Schedule '* * * * *'
+    $settings = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'settings.json') -Raw | ConvertFrom-Json
+    if ($settings.SubscriptionUrl -ne 'http://example.invalid/second') {
+        throw 'HTTP reinstall did not save the subscription URL.'
+    }
+    & "$temporaryDirectory/update.ps1" -System
     & "$temporaryDirectory/uninstall.ps1" -System
     & "$temporaryDirectory/uninstall.ps1" -System
     if (Get-Service MagicWrapper -ErrorAction SilentlyContinue) {

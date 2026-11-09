@@ -87,6 +87,8 @@ class UnixTest(unittest.TestCase):
                 sys.exit(0)
             assert sys.argv[sys.argv.index('--noproxy') + 1] == '*'
             assert sys.argv[sys.argv.index('--user-agent') + 1] == 'clash.meta'
+            assert sys.argv[sys.argv.index('--proto') + 1] == '=http,https'
+            assert sys.argv[sys.argv.index('--proto-redir') + 1] == '=http,https'
             destination = Path(sys.argv[sys.argv.index('--output') + 1])
             destination.write_bytes((directory / 'subscription.yaml').read_bytes())
         """,
@@ -151,6 +153,77 @@ class UnixTest(unittest.TestCase):
         self.run_script(
             'install.sh', 'https://example.invalid/sub?token=secret', '0 */6 * * *'
         )
+
+    def test_subscription_urls_require_http_or_https_without_newlines(self):
+        cases = (
+            ('http://example.invalid/sub?token=secret', True),
+            ('https://example.invalid/sub?token=secret', True),
+            ('ftp://example.invalid/sub', False),
+            ('file:///tmp/sub', False),
+            ('example.invalid/sub', False),
+            ('http://', False),
+            ('https://', False),
+            ('http://example.invalid/\nother', False),
+            ('https://example.invalid/\rother', False),
+        )
+        for url, valid in cases:
+            with self.subTest(url=url):
+                result = subprocess.run(
+                    [
+                        'bash',
+                        '-c',
+                        'source "$1"\nvalidate_url "$2"',
+                        'test',
+                        str(ROOT / 'common.sh'),
+                        url,
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode == 0, valid)
+
+    def test_http_install_requires_explicit_confirmation_and_updates_without_prompting(
+        self,
+    ):
+        url = 'http://example.invalid/sub?token=secret'
+        for answer in ('', '\n', 'n\n', 'yes\n'):
+            with self.subTest(answer=answer):
+                result = self.run_script('install.sh', url, '* * * * *', answer=answer)
+                self.assertIn('HTTP is unencrypted', result.stdout)
+                self.assertIn('cancelled', result.stdout)
+                self.assertNotIn('token=secret', result.stdout + result.stderr)
+                self.assertFalse(self.installation.exists())
+                self.assertFalse((self.directory / 'service-calls').exists())
+                self.assertFalse((self.directory / 'crontab').exists())
+        self.run_script('install.sh', url, '* * * * *', answer='Y\n')
+        self.assertEqual(
+            (self.installation / 'subscription-url').read_text(), url + '\n'
+        )
+        self.assertTrue((self.directory / 'active').exists())
+        self.configuration.write_text('mixed-port: 7891\n', encoding='utf-8')
+        result = self.run_script('update.sh')
+        self.assertNotIn('[y/N]', result.stdout)
+        self.assertEqual(
+            (self.installation / 'config.yaml').read_bytes(),
+            self.configuration.read_bytes(),
+        )
+
+    def test_http_reinstall_refusal_preserves_existing_installation(self):
+        self.install()
+        paths = (
+            self.installation / 'subscription-url',
+            self.installation / 'config.yaml',
+            self.directory / 'crontab',
+            self.directory / 'service-calls',
+        )
+        original = [path.read_bytes() for path in paths]
+        for answer in ('n\n', 'y\nn\n'):
+            with self.subTest(answer=answer):
+                result = self.run_script(
+                    'install.sh', 'http://other.invalid/', '* * * * *', answer=answer
+                )
+                self.assertIn('cancelled', result.stdout)
+                self.assertEqual([path.read_bytes() for path in paths], original)
 
     def test_cron_validation_uses_the_shared_cases(self):
         cases = json.loads((ROOT / 'tests/cron_cases.json').read_text(encoding='utf-8'))

@@ -10,6 +10,13 @@ $context = Get-MagicContext -System:$System
 
 Assert-SubscriptionUrl $SubscriptionUrl
 $null = ConvertFrom-CronExpression $Schedule
+if (([Uri]$SubscriptionUrl).Scheme -eq 'http') {
+    Write-Warning 'HTTP is unencrypted. Subscription tokens and configuration can be read or modified in transit.'
+    if ((Read-Host 'Install using this HTTP subscription anyway? [y/N]') -cnotin @('y', 'Y')) {
+        Write-Output 'Installation cancelled.'
+        return
+    }
+}
 if (-not (Test-Path -LiteralPath "$PSScriptRoot\mihomo.exe" -PathType Leaf)) {
     throw 'Place mihomo.exe beside install.ps1.'
 }

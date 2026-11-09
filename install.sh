@@ -7,13 +7,22 @@ source "$source_directory/common.sh"
 initialize_context
 
 if [[ $# != 2 ]]; then
-    fail "Usage: $0 HTTPS_SUBSCRIPTION_URL 'MIN HOUR DAY MONTH WEEKDAY'"
+    fail "Usage: $0 SUBSCRIPTION_URL 'MIN HOUR DAY MONTH WEEKDAY'"
 fi
 subscription_url=$1
 schedule=$2
 validate_url "$subscription_url"
 if ! validate_cron "$schedule"; then
     fail 'Invalid cron expression. Use five numeric fields, with *, lists, ranges, and steps on * or ranges.'
+fi
+if [[ $subscription_url == http://* ]]; then
+    printf '%s\n' 'Warning: HTTP is unencrypted. Subscription tokens and configuration can be read or modified in transit.'
+    printf 'Install using this HTTP subscription anyway? [y/N] '
+    read -r answer || answer=
+    if [[ $answer != y && $answer != Y ]]; then
+        printf '%s\n' 'Installation cancelled.'
+        exit 0
+    fi
 fi
 for dependency in curl crontab; do
     if ! command -v "$dependency" >/dev/null; then

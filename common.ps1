@@ -132,8 +132,8 @@ function Assert-SubscriptionUrl {
     param([string]$Url)
     $address = $null
     if ($Url -match '[\r\n]' -or -not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$address) -or
-        $address.Scheme -ne 'https' -or -not $address.Host) {
-        throw 'The subscription URL must be an absolute HTTPS URL without newlines.'
+        $address.Scheme -notin @('http', 'https') -or -not $address.Host) {
+        throw 'The subscription URL must be an absolute HTTP or HTTPS URL without newlines.'
     }
 }
 
@@ -222,37 +222,23 @@ function Save-Subscription {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $handler = [Net.Http.HttpClientHandler]::new()
     $handler.UseProxy = $false
-    $handler.AllowAutoRedirect = $false
+    $handler.AllowAutoRedirect = $true
+    $handler.MaxAutomaticRedirections = 5
     $client = [Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromSeconds(120)
     $client.DefaultRequestHeaders.UserAgent.ParseAdd('clash.meta')
-    $address = [Uri]$Url
     try {
-        for ($redirect = 0; $redirect -le 5; $redirect++) {
-            if ($address.Scheme -ne 'https') {
-                throw 'HTTPS is required for every redirect.'
+        $response = $client.GetAsync($Url).GetAwaiter().GetResult()
+        try {
+            $null = $response.EnsureSuccessStatusCode()
+            $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+            if ($bytes.Length -eq 0) {
+                throw 'Empty subscription.'
             }
-            $response = $client.GetAsync($address).GetAwaiter().GetResult()
-            try {
-                if ([int]$response.StatusCode -in @(301, 302, 303, 307, 308)) {
-                    if (-not $response.Headers.Location) {
-                        throw 'Missing redirect location.'
-                    }
-                    $address = [Uri]::new($address, $response.Headers.Location)
-                    continue
-                }
-                $null = $response.EnsureSuccessStatusCode()
-                $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
-                if ($bytes.Length -eq 0) {
-                    throw 'Empty subscription.'
-                }
-                [IO.File]::WriteAllBytes($Destination, $bytes)
-                return
-            } finally {
-                $response.Dispose()
-            }
+            [IO.File]::WriteAllBytes($Destination, $bytes)
+        } finally {
+            $response.Dispose()
         }
-        throw 'Too many redirects.'
     } catch {
         throw 'Subscription download failed; the active configuration was preserved.'
     } finally {
