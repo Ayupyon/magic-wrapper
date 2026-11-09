@@ -72,8 +72,12 @@ class UnixTest(unittest.TestCase):
                     for line in (settings / 'controller.env').read_text().splitlines()
                 )
                 header = sys.stdin.read()
-                assert credentials['CLASH_OVERRIDE_SECRET'] in header
-                assert credentials['CLASH_OVERRIDE_SECRET'] not in ' '.join(sys.argv)
+                secret = credentials['CLASH_OVERRIDE_SECRET']
+                if secret:
+                    assert header.strip() == 'header = "Authorization: Bearer ' + secret + '"'
+                    assert not any(argument.startswith('Authorization:') for argument in sys.argv)
+                else:
+                    assert header == ''
                 host, port = credentials['CLASH_OVERRIDE_EXTERNAL_CONTROLLER'].split(':')
                 if host == '0.0.0.0':
                     host = '127.0.0.1'
@@ -294,6 +298,53 @@ class UnixTest(unittest.TestCase):
         self.assertGreaterEqual(port, 49152)
         self.assertLessEqual(port, 65535)
 
+    def test_alphanumeric_secrets_have_no_length_limit(self):
+        for secret in ('0', 'aZ09', 'a' * 63, 'A' * 65, 'Az09' * 1024):
+            with self.subTest(length=len(secret)):
+                self.run_script(
+                    'install.sh',
+                    'https://example.invalid/',
+                    '* * * * *',
+                    '--controller-secret',
+                    secret,
+                    answer='y\n',
+                )
+                self.assertEqual(
+                    self.read_controller()['CLASH_OVERRIDE_SECRET'], secret
+                )
+
+    def test_empty_secret_warns_and_survives_updates_reinstalls_and_rollback(self):
+        arguments = ('install.sh', 'https://example.invalid/', '* * * * *')
+        result = self.run_script(*arguments, '--controller-secret', '')
+        self.assertIn('Warning: Empty controller secret', result.stderr)
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], '')
+        self.configuration.write_text('mixed-port: 7891\n', encoding='utf-8')
+        self.run_script('update.sh')
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], '')
+        result = self.run_script(*arguments, answer='y\n')
+        self.assertIn('Warning: Empty controller secret', result.stderr)
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], '')
+        self.configuration.write_text('fail-start', encoding='utf-8')
+        self.run_script(
+            *arguments, '--controller-secret', 'Ab9', answer='y\n', succeeds=False
+        )
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], '')
+        self.configuration.write_text('mixed-port: 7890\n', encoding='utf-8')
+        self.run_script(*arguments, '--controller-secret', 'Ab9', answer='y\n')
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], 'Ab9')
+        self.run_script(*arguments, '--controller-secret', '', answer='y\n')
+        self.assertEqual(self.read_controller()['CLASH_OVERRIDE_SECRET'], '')
+
+    def test_missing_saved_secret_is_rejected(self):
+        self.install()
+        controller_path = self.installation / 'controller.env'
+        address = self.read_controller()['CLASH_OVERRIDE_EXTERNAL_CONTROLLER']
+        controller_path.write_text(
+            f'CLASH_OVERRIDE_EXTERNAL_CONTROLLER={address}\n', encoding='utf-8'
+        )
+        result = self.run_script('update.sh', succeeds=False)
+        self.assertIn('Controller settings are missing or invalid', result.stderr)
+
     def test_invalid_controller_arguments_leave_installation_unchanged(self):
         secret = 'a1' * 32
         cases = [
@@ -308,6 +359,7 @@ class UnixTest(unittest.TestCase):
                 '127.0.0.1:9091',
             ),
             ('--controller-secret', secret, '--controller-secret', secret),
+            ('--controller-secret', '', '--controller-secret', secret),
         ]
         cases.extend(
             ('--controller-address', case['address'])
@@ -320,7 +372,14 @@ class UnixTest(unittest.TestCase):
         )
         cases.extend(
             ('--controller-secret', value)
-            for value in ('', 'a' * 63, 'a' * 65, 'A' * 64, 'g' * 64, secret + '\n')
+            for value in (
+                'with space',
+                'with-hyphen',
+                'with_underscore',
+                'é',
+                secret + '\n',
+                secret + '\r',
+            )
         )
         for installed in (False, True):
             if installed:

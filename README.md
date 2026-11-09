@@ -88,12 +88,18 @@ URL scheme or path. Each IPv4 octet must be from 0 to 255 without leading zeros;
 hostnames and IPv6 are not supported. Use `127.0.0.1:9090` for local access,
 `192.168.1.10:9090` to bind to that address on the Mihomo machine, or
 `0.0.0.0:9090` to listen on all IPv4 interfaces. The default remains localhost.
-The secret must contain exactly 64 lowercase hexadecimal characters (`0-9`,
-`a-f`). Invalid values are rejected before downloads or installation changes.
+The secret may contain `0-9`, `a-z`, and `A-Z`, with no minimum or maximum length.
+Pass `--controller-secret ''` on Unix or `-ControllerSecret ''` in PowerShell to
+save an empty secret; the installer warns when the selected secret is empty.
+Mihomo ignores empty secret overrides, so the subscription must also omit its
+secret or set it to empty for unauthenticated access. A nonempty subscription
+secret prevents the wrapper's empty-secret reload requests from succeeding.
+Invalid values are rejected before downloads or installation changes.
 Unix options follow the subscription URL and schedule.
 
 Each setting is independent: an explicit argument replaces that setting; an
-omitted argument preserves its saved value, or generates one if none exists.
+omitted argument preserves its saved value, including an empty secret, or
+generates one if none exists.
 Reinstallation uses the existing confirmation prompt, restarts Mihomo, and
 regenerates service settings, including Windows `winsw.xml`. A failed installation
 attempts to restore the previous credentials and service settings. Subscription
@@ -197,7 +203,8 @@ reload, and rollback:
 1. Download the subscription to a temporary file and validate it with `mihomo -t`.
 2. Skip unchanged content without issuing a reload request.
 3. Save the previous configuration and atomically replace `config.yaml`.
-4. Reload Mihomo through its authenticated controller.
+4. Reload Mihomo through its controller, authenticating when the saved secret is
+   nonempty.
 5. If reload fails or times out, restore the previous file and attempt another
    reload. If that request also fails, report that runtime state needs manual
    recovery; the previous file remains on disk.
@@ -233,11 +240,11 @@ port in 49152–65535 on Unix or an available ephemeral port on Windows. Port
 selection does not reserve the port until startup. A collision causes the
 installation's controller check to fail and triggers a rollback attempt.
 
-LAN and wildcard listening addresses require the same authentication secret as
-localhost. HTTP controller traffic, including the secret, is unencrypted. Limit
-network access to trusted clients with your firewall, and use SSH forwarding or
-another encrypted transport across untrusted networks. The wrapper does not
-configure firewall rules or TLS.
+An empty secret can leave the controller unauthenticated on localhost, LAN, and
+wildcard addresses. HTTP controller traffic, including any secret, is
+unencrypted. Limit network access to trusted clients with your firewall, and use
+SSH forwarding or another encrypted transport across untrusted networks. The
+wrapper does not configure firewall rules or TLS.
 
 Credentials persist in `controller.env` on Unix and `controller.json` on Windows.
 Reinstalls preserve them unless controller arguments override them. These files
@@ -245,10 +252,11 @@ inherit the installation's access restrictions; access to them grants controller
 API access.
 
 Mihomo receives `CLASH_OVERRIDE_EXTERNAL_CONTROLLER` and `CLASH_OVERRIDE_SECRET`
-through its environment. These override the subscription's HTTP controller and
-secret while preserving the downloaded YAML. Other subscription settings remain
-in effect. Unix services use `run.sh`; Windows login tasks use `run.ps1`; WinSW
-supplies the environment directly. Credentials stay out of process command lines.
+through its environment. These override the subscription's HTTP controller and,
+when nonempty, its secret while preserving the downloaded YAML. Other
+subscription settings remain in effect. Unix services use `run.sh`; Windows
+login tasks use `run.ps1`; WinSW supplies the environment directly. Credentials
+stay out of process command lines.
 Local API requests bypass HTTP proxies, refuse redirects, and use bounded
 timeouts.
 

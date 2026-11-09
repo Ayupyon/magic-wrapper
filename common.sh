@@ -21,7 +21,8 @@ validate_controller_address() {
 }
 
 validate_controller_secret() {
-    [[ $1 =~ ^[0-9a-f]{64}$ ]]
+    local LC_ALL=C
+    [[ $1 =~ ^[0-9a-zA-Z]*$ ]]
 }
 
 load_controller() {
@@ -30,6 +31,9 @@ load_controller() {
         return 1
     fi
     controller_address=$(sed -n 's/^CLASH_OVERRIDE_EXTERNAL_CONTROLLER=//p' "$installation_directory/controller.env")
+    if ! grep -q '^CLASH_OVERRIDE_SECRET=' "$installation_directory/controller.env"; then
+        return 1
+    fi
     controller_secret=$(sed -n 's/^CLASH_OVERRIDE_SECRET=//p' "$installation_directory/controller.env")
     validate_controller_address "$controller_address" && validate_controller_secret "$controller_secret"
 }
@@ -41,17 +45,21 @@ initialize_controller() {
             fail 'Invalid controller settings.'
         fi
         address=${address:-$controller_address}
-        secret=${secret:-$controller_secret}
+        if (( $# < 2 )); then
+            secret=$controller_secret
+        fi
+    elif (( $# < 2 )); then
+        secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
     fi
     if [[ -z $address ]]; then
         random_port=$(od -An -N2 -tu2 /dev/urandom)
         address="127.0.0.1:$((49152 + random_port % 16384))"
     fi
-    if [[ -z $secret ]]; then
-        secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-    fi
     if ! validate_controller_address "$address" || ! validate_controller_secret "$secret"; then
         fail 'Invalid controller settings.'
+    fi
+    if [[ -z $secret ]]; then
+        printf '%s\n' 'Warning: Empty controller secret disables authentication only if the subscription secret is also empty or omitted; Mihomo ignores empty secret overrides.' >&2
     fi
     printf 'CLASH_OVERRIDE_EXTERNAL_CONTROLLER=%s\nCLASH_OVERRIDE_SECRET=%s\n' \
         "$address" "$secret" > "$installation_directory/controller.env"
@@ -67,10 +75,15 @@ reload_configuration() {
     if [[ $reload_address == 0.0.0.0:* ]]; then
         reload_address="127.0.0.1:${reload_address##*:}"
     fi
-    http_status=$(printf 'header = "Authorization: Bearer %s"\n' "$controller_secret" | \
-        curl --config - --noproxy '*' --silent --show-error --connect-timeout 5 --max-time 120 \
-        --request PUT --header 'Content-Type: application/json' --data '{"path":""}' \
-        --output /dev/null --write-out '%{http_code}' "http://$reload_address/configs?force=true") || return 1
+    http_status=$(
+        {
+            if [[ -n $controller_secret ]]; then
+                printf 'header = "Authorization: Bearer %s"\n' "$controller_secret"
+            fi
+        } | curl --config - --noproxy '*' --silent --show-error --connect-timeout 5 --max-time 120 \
+            --request PUT --header 'Content-Type: application/json' --data '{"path":""}' \
+            --output /dev/null --write-out '%{http_code}' "http://$reload_address/configs?force=true"
+    ) || return 1
     [[ $http_status == 204 ]]
 }
 

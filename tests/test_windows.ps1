@@ -115,6 +115,34 @@ foreach ($case in $addressCases) {
         if ($controller.Address -notmatch '^127\.0\.0\.1:[0-9]+\z' -or $controller.Secret -cne $secret) {
             throw 'Secret-only installation did not generate an address.'
         }
+        foreach ($secret in @('0', 'aZ09', ('a' * 63), ('A' * 65), ('Az09' * 1024))) {
+            Initialize-MagicController $context -Secret $secret
+            if ((Get-MagicController $temporaryDirectory).Secret -cne $secret) {
+                throw 'Alphanumeric secret was not preserved.'
+            }
+        }
+        $warnings = @(Initialize-MagicController $context -Secret '' 3>&1)
+        if ((Get-MagicController $temporaryDirectory).Secret -cne '' -or
+            ($warnings | Out-String) -notmatch 'Empty controller secret') {
+            throw 'Empty secret was not saved with a warning.'
+        }
+        Initialize-MagicController $context 3>$null
+        if ((Get-MagicController $temporaryDirectory).Secret -cne '') {
+            throw 'Omitted secret replaced the saved empty secret.'
+        }
+        foreach ($invalidSecret in @($null, 123)) {
+            @{ Address = '127.0.0.1:9090'; Secret = $invalidSecret } |
+                ConvertTo-Json | Set-Content "$temporaryDirectory/controller.json"
+            $failure = $null
+            try {
+                $null = Get-MagicController $temporaryDirectory
+            } catch {
+                $failure = $_
+            }
+            if (-not $failure) {
+                throw 'Non-string saved secret was accepted.'
+            }
+        }
         Copy-Item "$root/common.ps1", "$root/install.ps1" $temporaryDirectory
         Add-Content "$temporaryDirectory/common.ps1" @'
 function Get-MagicContext {
@@ -122,11 +150,10 @@ function Get-MagicContext {
 }
 '@
         $cases = @(
-            @{ ControllerSecret = '' },
-            @{ ControllerSecret = 'a' * 63 },
-            @{ ControllerSecret = 'a' * 65 },
-            @{ ControllerSecret = 'A' * 64 },
-            @{ ControllerSecret = 'g' * 64 },
+            @{ ControllerSecret = 'with space' },
+            @{ ControllerSecret = 'with-hyphen' },
+            @{ ControllerSecret = 'with_underscore' },
+            @{ ControllerSecret = [string][char]0x00e9 },
             @{ ControllerSecret = $secret + "`n" },
             @{ UnknownArgument = $secret }
         )
@@ -348,8 +375,13 @@ public class MihomoFixture {
         while (true) {
             HttpListenerContext request = listener.GetContext();
             request.Request.InputStream.CopyTo(Stream.Null);
-            bool authenticated = request.Request.Headers["Authorization"] ==
-                "Bearer " + Environment.GetEnvironmentVariable("CLASH_OVERRIDE_SECRET");
+            string secret = Environment.GetEnvironmentVariable("CLASH_OVERRIDE_SECRET");
+            bool authenticated;
+            if (String.IsNullOrEmpty(secret)) {
+                authenticated = request.Request.Headers["Authorization"] == null;
+            } else {
+                authenticated = request.Request.Headers["Authorization"] == "Bearer " + secret;
+            }
             bool reload = request.Request.HttpMethod == "PUT" &&
                 request.Request.Url.Host == expectedHost &&
                 request.Request.RawUrl == "/configs?force=true";
@@ -489,6 +521,23 @@ try {
         throw 'Secret-only reinstall did not preserve the controller address.'
     }
     & "$temporaryDirectory/update.ps1" -System
+    $warnings = @()
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *' `
+        -ControllerSecret '' -WarningVariable warnings
+    $controller = Get-Content $controllerPath -Raw | ConvertFrom-Json
+    if ($controller.Secret -cne '' -or ($warnings | Out-String) -notmatch 'Empty controller secret') {
+        throw 'Empty-secret installation did not save the secret and warn.'
+    }
+    [xml]$serviceDefinition = Get-Content (Join-Path $env:MAGIC_TEST_DIRECTORY 'winsw.xml') -Raw
+    if (@($serviceDefinition.service.env | Where-Object { $_.name -eq 'CLASH_OVERRIDE_SECRET' })[0].value -cne '') {
+        throw 'WinSW did not receive the empty controller secret.'
+    }
+    Set-Content $env:MAGIC_TEST_SUBSCRIPTION 'mixed-port: 7892'
+    & "$temporaryDirectory/update.ps1" -System
+    & "$temporaryDirectory/install.ps1" -System -SubscriptionUrl 'https://example.invalid/second' -Schedule '* * * * *'
+    if ((Get-Content $controllerPath -Raw | ConvertFrom-Json).Secret -cne '') {
+        throw 'Reinstall replaced the saved empty secret.'
+    }
     & "$temporaryDirectory/uninstall.ps1" -System
     & "$temporaryDirectory/uninstall.ps1" -System
     if (Get-Service MagicWrapper -ErrorAction SilentlyContinue) {

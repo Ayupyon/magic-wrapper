@@ -8,11 +8,14 @@ param(
 )
 
 . "$PSScriptRoot\common.ps1"
+$controllerArguments = @{}
 if ($PSBoundParameters.ContainsKey('ControllerAddress')) {
     Assert-MagicControllerAddress $ControllerAddress
+    $controllerArguments.Address = $ControllerAddress
 }
 if ($PSBoundParameters.ContainsKey('ControllerSecret')) {
     Assert-MagicControllerSecret $ControllerSecret
+    $controllerArguments.Secret = $ControllerSecret
 }
 $context = Get-MagicContext -System:$System
 
@@ -100,7 +103,7 @@ try {
     Assert-MagicConfiguration $context (Join-Path $context.Directory 'mihomo.exe') $configuration
     $settings | ConvertTo-Json | Set-Content -LiteralPath $context.SettingsPath -Encoding UTF8
     Copy-Item -LiteralPath $configuration -Destination (Join-Path $context.Directory 'config.yaml') -Force
-    Initialize-MagicController $context -Address $ControllerAddress -Secret $ControllerSecret
+    Initialize-MagicController $context @controllerArguments
     Register-MagicTasks $context
     Restart-MagicService $context
     Reload-MagicConfiguration $context

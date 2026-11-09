@@ -14,6 +14,7 @@ schedule=$2
 shift 2
 requested_controller_address=
 requested_controller_secret=
+controller_secret_supplied=false
 while (( $# > 0 )); do
     case $1 in
         --controller-address)
@@ -27,13 +28,14 @@ while (( $# > 0 )); do
             shift 2
             ;;
         --controller-secret)
-            if [[ $# -lt 2 || -n $requested_controller_secret ]]; then
+            if [[ $# -lt 2 ]] || $controller_secret_supplied; then
                 fail 'Provide --controller-secret once with a value.'
             fi
             if ! validate_controller_secret "$2"; then
-                fail 'Controller secret must contain exactly 64 lowercase hexadecimal characters.'
+                fail 'Controller secret may contain only 0-9, a-z, and A-Z.'
             fi
             requested_controller_secret=$2
+            controller_secret_supplied=true
             shift 2
             ;;
         *)
@@ -161,7 +163,11 @@ printf '%s\n' "$subscription_url" > "$installation_directory/subscription-url"
 printf '%s\n' "$schedule" > "$installation_directory/schedule"
 printf '%s\n' "$scope" > "$installation_directory/scope"
 mv -f "$temporary_directory/config.yaml" "$installation_directory/config.yaml"
-initialize_controller "$requested_controller_address" "$requested_controller_secret"
+if $controller_secret_supplied; then
+    initialize_controller "$requested_controller_address" "$requested_controller_secret"
+else
+    initialize_controller "$requested_controller_address"
+fi
 register_service
 write_schedule "$schedule"
 restart_service

@@ -16,8 +16,8 @@ function Assert-MagicControllerAddress {
 
 function Assert-MagicControllerSecret {
     param([string]$Secret)
-    if ($Secret -cnotmatch '^[0-9a-f]{64}\z') {
-        throw 'Controller secret must contain exactly 64 lowercase hexadecimal characters.'
+    if ($Secret -cnotmatch '^[0-9a-zA-Z]*\z') {
+        throw 'Controller secret may contain only 0-9, a-z, and A-Z.'
     }
 }
 
@@ -29,20 +29,25 @@ function Get-MagicController {
     }
     $controller = Get-Content -LiteralPath $controllerPath -Raw | ConvertFrom-Json
     Assert-MagicControllerAddress $controller.Address
+    if ($controller.Secret -isnot [string]) {
+        throw 'Saved controller secret must be a string.'
+    }
     Assert-MagicControllerSecret $controller.Secret
     $controller
 }
 
 function Initialize-MagicController {
     param($Context, [string]$Address, [string]$Secret)
+    $secretSupplied = $PSBoundParameters.ContainsKey('Secret')
     $controllerPath = Join-Path $Context.Directory 'controller.json'
     if (Test-Path -LiteralPath $controllerPath) {
         $controller = Get-MagicController $Context.Directory
         if (-not $Address) {
             $Address = $controller.Address
         }
-        if (-not $Secret) {
+        if (-not $secretSupplied) {
             $Secret = $controller.Secret
+            $secretSupplied = $true
         }
     }
     if (-not $Address) {
@@ -55,7 +60,7 @@ function Initialize-MagicController {
         }
         $Address = "127.0.0.1:$port"
     }
-    if (-not $Secret) {
+    if (-not $secretSupplied) {
         $secretBytes = [byte[]]::new(32)
         $random = [Security.Cryptography.RandomNumberGenerator]::Create()
         try {
@@ -67,6 +72,9 @@ function Initialize-MagicController {
     }
     Assert-MagicControllerAddress $Address
     Assert-MagicControllerSecret $Secret
+    if ($Secret.Length -eq 0) {
+        Write-Warning 'Empty controller secret disables authentication only if the subscription secret is also empty or omitted; Mihomo ignores empty secret overrides.'
+    }
     @{
         Address = $Address
         Secret = $Secret
@@ -86,8 +94,10 @@ function Reload-MagicConfiguration {
     $client.Timeout = [TimeSpan]::FromSeconds(120)
     $content = [Net.Http.StringContent]::new('{"path":""}', [Text.Encoding]::UTF8, 'application/json')
     try {
-        $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new(
-            'Bearer', $controller.Secret)
+        if ($controller.Secret.Length -gt 0) {
+            $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new(
+                'Bearer', $controller.Secret)
+        }
         $response = $client.PutAsync(
             "http://$reloadAddress/configs?force=true", $content).GetAwaiter().GetResult()
         try {
